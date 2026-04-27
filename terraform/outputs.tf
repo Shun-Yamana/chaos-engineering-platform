@@ -38,3 +38,8 @@ output "ecr_service_b_url" {
   description = "ECR repository URL for service-b"
   value       = aws_ecr_repository.service_b.repository_url
 }
+
+output "api_endpoint" {
+  description = "Chaos Platform API endpoint"
+  value       = aws_apigatewayv2_stage.default.invoke_url
+}
