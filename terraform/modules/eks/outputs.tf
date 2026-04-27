@@ -17,3 +17,8 @@ output "fargate_profile_name" {
   description = "Fargate profile name"
   value       = aws_eks_fargate_profile.default.fargate_profile_name
 }
+
+output "fargate_pod_execution_role_name" {
+  description = "Fargate pod execution IAM role name"
+  value       = aws_iam_role.fargate_pod_execution.name
+}
