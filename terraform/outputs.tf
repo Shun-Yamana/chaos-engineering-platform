@@ -28,3 +28,13 @@ output "kubeconfig_command" {
   description = "Command to update kubeconfig"
   value       = "aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.aws_region}"
 }
+
+output "ecr_service_a_url" {
+  description = "ECR repository URL for service-a"
+  value       = aws_ecr_repository.service_a.repository_url
+}
+
+output "ecr_service_b_url" {
+  description = "ECR repository URL for service-b"
+  value       = aws_ecr_repository.service_b.repository_url
+}
