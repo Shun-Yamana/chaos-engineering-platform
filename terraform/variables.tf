@@ -45,3 +45,9 @@ variable "kubernetes_version" {
   type        = string
   default     = "1.31"
 }
+
+variable "slack_webhook_url" {
+  description = "Slack incoming webhook URL for chaos alerts"
+  type        = string
+  sensitive   = true
+}
