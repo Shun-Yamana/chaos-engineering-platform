@@ -61,6 +61,8 @@ def run(experiment_file: str, local: bool):
         burn_rate_threshold=float(definition["slo"]["burn_rate_threshold"]),
         slack_webhook_url=slack_webhook or None,
         experiment_table=EXPERIMENT_TABLE,
+        latency_ms=int(definition["fault"].get("latency_ms", 500)),
+        fault_rate=float(definition["fault"].get("fault_rate", 0.5)),
     )
 
     click.echo(f"Starting experiment: {experiment.name} [{experiment.experiment_id}]")
@@ -110,6 +112,8 @@ def stop(experiment_id: str, reason: str):
         slack_webhook_url=None,
         experiment_table=EXPERIMENT_TABLE,
         started_at=item["started_at"],
+        latency_ms=int(item.get("latency_ms", 500)),
+        fault_rate=float(item.get("fault_rate", 0.5)),
     )
 
     agent = ChaosAgent(kubeconfig_path=KUBECONFIG)

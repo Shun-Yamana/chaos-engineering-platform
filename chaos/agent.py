@@ -17,13 +17,15 @@ class Experiment:
     name: str
     namespace: str
     service: str
-    fault_type: str        # pod_kill | cpu_stress
+    fault_type: str        # pod_kill | cpu_stress | memory_stress | http_error_inject | network_latency
     duration_seconds: int
     error_rate_threshold: float
     burn_rate_threshold: float
     slack_webhook_url: str | None
     experiment_table: str
     started_at: str | None = None
+    latency_ms: int = 500
+    fault_rate: float = 0.5
 
 
 class ChaosAgent:
@@ -41,11 +43,7 @@ class ChaosAgent:
             namespace=namespace,
             label_selector=f"app={service}",
         )
-        running = [
-            p for p in pods.items
-            if p.status.phase == "Running"
-        ]
-        return running
+        return [p for p in pods.items if p.status.phase == "Running"]
 
     def _record_experiment(self, experiment: Experiment, status: str, stop_reason: str = ""):
         table = dynamodb.Table(experiment.experiment_table)
@@ -70,17 +68,22 @@ class ChaosAgent:
 
         table.put_item(Item=item)
 
+    def _get_deployment(self, namespace: str, service: str):
+        return self.apps_v1.read_namespaced_deployment(name=service, namespace=namespace)
+
+    def _patch_deployment(self, namespace: str, service: str, deployment):
+        self.apps_v1.patch_namespaced_deployment(name=service, namespace=namespace, body=deployment)
+
+    # --- pod_kill ---
+
     def pod_kill(self, experiment: Experiment):
-        logger.info(f"[{experiment.experiment_id}] starting pod_kill: service={experiment.service}")
+        logger.info(f"[{experiment.experiment_id}] pod_kill: service={experiment.service}")
 
         pods = self._get_pods(experiment.namespace, experiment.service)
         if not pods:
             raise RuntimeError(f"No running pods found for service={experiment.service}")
 
-        target = pods[0]
-        pod_name = target.metadata.name
-        logger.info(f"[{experiment.experiment_id}] killing pod: {pod_name}")
-
+        pod_name = pods[0].metadata.name
         try:
             self.core_v1.delete_namespaced_pod(
                 name=pod_name,
@@ -92,24 +95,19 @@ class ChaosAgent:
                 raise
             logger.warning(f"[{experiment.experiment_id}] pod already gone: {pod_name}")
 
-        logger.info(f"[{experiment.experiment_id}] pod killed: {pod_name}")
+        logger.info(f"[{experiment.experiment_id}] killed pod: {pod_name}")
+
+    # --- cpu_stress ---
 
     def cpu_stress_inject(self, experiment: Experiment):
-        logger.info(f"[{experiment.experiment_id}] starting cpu_stress: service={experiment.service}")
+        deployment = self._get_deployment(experiment.namespace, experiment.service)
 
-        deployment = self.apps_v1.read_namespaced_deployment(
-            name=experiment.service,
-            namespace=experiment.namespace,
-        )
-
-        containers = deployment.spec.template.spec.containers
-        already_injected = any(c.name == "stress-ng" for c in containers)
-        if already_injected:
-            logger.info(f"[{experiment.experiment_id}] stress-ng sidecar already present, skipping inject")
+        if any(c.name == "stress-ng-cpu" for c in deployment.spec.template.spec.containers):
+            logger.info(f"[{experiment.experiment_id}] stress-ng-cpu already present, skipping")
             return
 
-        stress_container = client.V1Container(
-            name="stress-ng",
+        sidecar = client.V1Container(
+            name="stress-ng-cpu",
             image="alexeiled/stress-ng:latest",
             args=["--cpu", "1", "--timeout", str(experiment.duration_seconds)],
             resources=client.V1ResourceRequirements(
@@ -117,30 +115,113 @@ class ChaosAgent:
                 limits={"cpu": "512m", "memory": "128Mi"},
             ),
         )
-        deployment.spec.template.spec.containers.append(stress_container)
-
-        self.apps_v1.patch_namespaced_deployment(
-            name=experiment.service,
-            namespace=experiment.namespace,
-            body=deployment,
-        )
-        logger.info(f"[{experiment.experiment_id}] stress-ng sidecar injected")
+        deployment.spec.template.spec.containers.append(sidecar)
+        self._patch_deployment(experiment.namespace, experiment.service, deployment)
+        logger.info(f"[{experiment.experiment_id}] stress-ng-cpu injected")
 
     def cpu_stress_remove(self, experiment: Experiment):
-        deployment = self.apps_v1.read_namespaced_deployment(
-            name=experiment.service,
-            namespace=experiment.namespace,
-        )
-        containers = deployment.spec.template.spec.containers
+        deployment = self._get_deployment(experiment.namespace, experiment.service)
         deployment.spec.template.spec.containers = [
-            c for c in containers if c.name != "stress-ng"
+            c for c in deployment.spec.template.spec.containers if c.name != "stress-ng-cpu"
         ]
-        self.apps_v1.patch_namespaced_deployment(
-            name=experiment.service,
-            namespace=experiment.namespace,
-            body=deployment,
+        self._patch_deployment(experiment.namespace, experiment.service, deployment)
+        logger.info(f"[{experiment.experiment_id}] stress-ng-cpu removed")
+
+    # --- memory_stress ---
+
+    def memory_stress_inject(self, experiment: Experiment):
+        deployment = self._get_deployment(experiment.namespace, experiment.service)
+
+        if any(c.name == "stress-ng-mem" for c in deployment.spec.template.spec.containers):
+            logger.info(f"[{experiment.experiment_id}] stress-ng-mem already present, skipping")
+            return
+
+        sidecar = client.V1Container(
+            name="stress-ng-mem",
+            image="alexeiled/stress-ng:latest",
+            args=["--vm", "1", "--vm-bytes", "80%", "--timeout", str(experiment.duration_seconds)],
+            resources=client.V1ResourceRequirements(
+                requests={"cpu": "64m", "memory": "256Mi"},
+                limits={"cpu": "128m", "memory": "512Mi"},
+            ),
         )
-        logger.info(f"[{experiment.experiment_id}] stress-ng sidecar removed")
+        deployment.spec.template.spec.containers.append(sidecar)
+        self._patch_deployment(experiment.namespace, experiment.service, deployment)
+        logger.info(f"[{experiment.experiment_id}] stress-ng-mem injected")
+
+    def memory_stress_remove(self, experiment: Experiment):
+        deployment = self._get_deployment(experiment.namespace, experiment.service)
+        deployment.spec.template.spec.containers = [
+            c for c in deployment.spec.template.spec.containers if c.name != "stress-ng-mem"
+        ]
+        self._patch_deployment(experiment.namespace, experiment.service, deployment)
+        logger.info(f"[{experiment.experiment_id}] stress-ng-mem removed")
+
+    # --- http_error_inject ---
+
+    def http_error_inject(self, experiment: Experiment):
+        deployment = self._get_deployment(experiment.namespace, experiment.service)
+
+        for container in deployment.spec.template.spec.containers:
+            if container.name == experiment.service:
+                if container.env is None:
+                    container.env = []
+                container.env = [e for e in container.env if e.name != "FAULT_RATE"]
+                container.env.append(client.V1EnvVar(name="FAULT_RATE", value=str(experiment.fault_rate)))
+                break
+
+        self._patch_deployment(experiment.namespace, experiment.service, deployment)
+        logger.info(f"[{experiment.experiment_id}] FAULT_RATE={experiment.fault_rate} patched")
+
+    def http_error_remove(self, experiment: Experiment):
+        deployment = self._get_deployment(experiment.namespace, experiment.service)
+
+        for container in deployment.spec.template.spec.containers:
+            if container.name == experiment.service:
+                if container.env:
+                    container.env = [e for e in container.env if e.name != "FAULT_RATE"]
+                break
+
+        self._patch_deployment(experiment.namespace, experiment.service, deployment)
+        logger.info(f"[{experiment.experiment_id}] FAULT_RATE removed")
+
+    # --- network_latency ---
+
+    def network_latency_inject(self, experiment: Experiment):
+        deployment = self._get_deployment(experiment.namespace, experiment.service)
+
+        if any(c.name == "tc-latency" for c in deployment.spec.template.spec.containers):
+            logger.info(f"[{experiment.experiment_id}] tc-latency already present, skipping")
+            return
+
+        sidecar = client.V1Container(
+            name="tc-latency",
+            image="nicolaka/netshoot",
+            command=[
+                "sh", "-c",
+                f"tc qdisc add dev eth0 root netem delay {experiment.latency_ms}ms && sleep infinity",
+            ],
+            security_context=client.V1SecurityContext(
+                capabilities=client.V1Capabilities(add=["NET_ADMIN"])
+            ),
+            resources=client.V1ResourceRequirements(
+                requests={"cpu": "10m", "memory": "32Mi"},
+                limits={"cpu": "50m", "memory": "64Mi"},
+            ),
+        )
+        deployment.spec.template.spec.containers.append(sidecar)
+        self._patch_deployment(experiment.namespace, experiment.service, deployment)
+        logger.info(f"[{experiment.experiment_id}] tc-latency injected ({experiment.latency_ms}ms)")
+
+    def network_latency_remove(self, experiment: Experiment):
+        deployment = self._get_deployment(experiment.namespace, experiment.service)
+        deployment.spec.template.spec.containers = [
+            c for c in deployment.spec.template.spec.containers if c.name != "tc-latency"
+        ]
+        self._patch_deployment(experiment.namespace, experiment.service, deployment)
+        logger.info(f"[{experiment.experiment_id}] tc-latency removed")
+
+    # --- run / stop ---
 
     def run(self, experiment: Experiment):
         experiment.started_at = datetime.now(timezone.utc).isoformat()
@@ -154,9 +235,23 @@ class ChaosAgent:
 
             elif experiment.fault_type == "cpu_stress":
                 self.cpu_stress_inject(experiment)
-                logger.info(f"[{experiment.experiment_id}] waiting {experiment.duration_seconds}s")
                 time.sleep(experiment.duration_seconds)
                 self.cpu_stress_remove(experiment)
+
+            elif experiment.fault_type == "memory_stress":
+                self.memory_stress_inject(experiment)
+                time.sleep(experiment.duration_seconds)
+                self.memory_stress_remove(experiment)
+
+            elif experiment.fault_type == "http_error_inject":
+                self.http_error_inject(experiment)
+                time.sleep(experiment.duration_seconds)
+                self.http_error_remove(experiment)
+
+            elif experiment.fault_type == "network_latency":
+                self.network_latency_inject(experiment)
+                time.sleep(experiment.duration_seconds)
+                self.network_latency_remove(experiment)
 
             else:
                 raise ValueError(f"Unknown fault_type: {experiment.fault_type}")
@@ -170,11 +265,17 @@ class ChaosAgent:
         logger.info(f"[{experiment.experiment_id}] experiment completed")
 
     def stop(self, experiment: Experiment, reason: str = "manual"):
-        if experiment.fault_type == "cpu_stress":
+        cleanup = {
+            "cpu_stress": self.cpu_stress_remove,
+            "memory_stress": self.memory_stress_remove,
+            "http_error_inject": self.http_error_remove,
+            "network_latency": self.network_latency_remove,
+        }
+        if experiment.fault_type in cleanup:
             try:
-                self.cpu_stress_remove(experiment)
+                cleanup[experiment.fault_type](experiment)
             except Exception as e:
-                logger.warning(f"[{experiment.experiment_id}] failed to remove stress-ng: {e}")
+                logger.warning(f"[{experiment.experiment_id}] cleanup failed: {e}")
 
         self._record_experiment(experiment, "stopped", stop_reason=reason)
         logger.info(f"[{experiment.experiment_id}] experiment stopped: {reason}")

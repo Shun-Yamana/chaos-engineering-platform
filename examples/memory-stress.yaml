@@ -1,0 +1,10 @@
+name: memory-stress-service-a
+target:
+  namespace: default
+  service: service-a
+fault:
+  type: memory_stress
+  duration: 120
+slo:
+  error_rate_threshold: 0.05
+  burn_rate_threshold: 2.0

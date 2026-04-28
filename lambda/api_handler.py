@@ -50,6 +50,8 @@ def start_experiment(body: dict) -> dict:
         "namespace": body["target"].get("namespace", "default"),
         "fault_type": body["fault"]["type"],
         "duration_seconds": int(body["fault"].get("duration", 60)),
+        "latency_ms": int(body["fault"].get("latency_ms", 500)),
+        "fault_rate": str(body["fault"].get("fault_rate", 0.5)),
         "error_rate_threshold": str(body["slo"].get("error_rate_threshold", 0.05)),
         "burn_rate_threshold": str(body["slo"].get("burn_rate_threshold", 2.0)),
         "status": "pending",
