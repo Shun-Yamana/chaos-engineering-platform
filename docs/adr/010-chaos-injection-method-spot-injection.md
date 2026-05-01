@@ -40,8 +40,27 @@ Deployment spec 変更
 - 実験の爆発半径を特定 Pod に限定できる
 - 現実の障害を忠実に再現できる（現実でも障害は全 Pod に同時には起きない）
 
+### network_latency を ephemeral container 方式で扱えない理由
+
+スポット注入方式の延長として `network_latency` も ephemeral container で実装することを検討したが、EKS Fargate の制約により断念した。
+
+`tc netem` による遅延注入には NET_ADMIN Linux Capability が必要だが、EKS Fargate は Pod レベルで NET_ADMIN を封じている。sidecar・exec・ephemeral container のいずれの方式でも回避できない。
+
+`network_latency` は AWS FIS（`aws:eks:pod-network-latency`）に委譲する（詳細は ADR 009 参照）。
+
+**実験別の注入方式まとめ：**
+
+| 実験 | 方式 | 理由 |
+|------|------|------|
+| cpu_stress | ephemeral container（本 ADR） | Fargate 対応、Deployment spec 変更不要 |
+| memory_stress | ephemeral container（本 ADR） | 同上 |
+| http_error_inject | Deployment spec 変更（env var パッチ） | アプリレベルの操作のため FIS 不可、ローリングアップデートは許容 |
+| network_latency | AWS FIS | Fargate の NET_ADMIN 制約により ephemeral container 不可 |
+| pod_kill | Kubernetes API（Pod 直接削除） | 変更なし |
+
 ## Consequences
 
-- `cpu_stress_inject`・`memory_stress_inject` はスポット注入方式で実装する
+- `cpu_stress_inject`・`memory_stress_inject` はスポット注入方式（ephemeral container）で実装する
 - 実験終了時のクリーンアップは Pod 内プロセスの終了のみで済む（Deployment spec の復元が不要）
 - 対象 Pod の選択ロジック（ランダム1台 or 指定）を実装に含める必要がある
+- `network_latency_inject` は AWS FIS API 呼び出しとして実装し、tc-latency sidecar 方式は廃止する
