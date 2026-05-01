@@ -5,6 +5,7 @@ from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
+from kubernetes.stream import stream
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,7 @@ class ChaosAgent:
 
         self.core_v1 = client.CoreV1Api()
         self.apps_v1 = client.AppsV1Api()
+        self._stress_targets: dict[str, str] = {}  # experiment_id -> pod_name
 
     def _get_pods(self, namespace: str, service: str) -> list:
         pods = self.core_v1.list_namespaced_pod(
@@ -100,62 +102,87 @@ class ChaosAgent:
     # --- cpu_stress ---
 
     def cpu_stress_inject(self, experiment: Experiment):
-        deployment = self._get_deployment(experiment.namespace, experiment.service)
+        pods = self._get_pods(experiment.namespace, experiment.service)
+        if not pods:
+            raise RuntimeError(f"No running pods found for service={experiment.service}")
 
-        if any(c.name == "stress-ng-cpu" for c in deployment.spec.template.spec.containers):
-            logger.info(f"[{experiment.experiment_id}] stress-ng-cpu already present, skipping")
-            return
+        pod_name = pods[0].metadata.name
+        self._stress_targets[experiment.experiment_id] = pod_name
 
-        sidecar = client.V1Container(
-            name="stress-ng-cpu",
-            image="alexeiled/stress-ng:latest",
-            args=["--cpu", "1", "--timeout", str(experiment.duration_seconds)],
-            resources=client.V1ResourceRequirements(
-                requests={"cpu": "256m", "memory": "64Mi"},
-                limits={"cpu": "512m", "memory": "128Mi"},
-            ),
+        body = {
+            "spec": {
+                "ephemeralContainers": [{
+                    "name": "stress-ng-cpu",
+                    "image": "alexeiled/stress-ng:latest",
+                    "args": ["--cpu", "1", "--timeout", str(experiment.duration_seconds)],
+                    "resources": {
+                        "requests": {"cpu": "256m", "memory": "64Mi"},
+                        "limits": {"cpu": "512m", "memory": "128Mi"},
+                    },
+                }]
+            }
+        }
+        self.core_v1.patch_namespaced_pod_ephemeralcontainers(
+            name=pod_name, namespace=experiment.namespace, body=body
         )
-        deployment.spec.template.spec.containers.append(sidecar)
-        self._patch_deployment(experiment.namespace, experiment.service, deployment)
-        logger.info(f"[{experiment.experiment_id}] stress-ng-cpu injected")
+        logger.info(f"[{experiment.experiment_id}] stress-ng-cpu injected into pod={pod_name}")
 
     def cpu_stress_remove(self, experiment: Experiment):
-        deployment = self._get_deployment(experiment.namespace, experiment.service)
-        deployment.spec.template.spec.containers = [
-            c for c in deployment.spec.template.spec.containers if c.name != "stress-ng-cpu"
-        ]
-        self._patch_deployment(experiment.namespace, experiment.service, deployment)
-        logger.info(f"[{experiment.experiment_id}] stress-ng-cpu removed")
+        pod_name = self._stress_targets.pop(experiment.experiment_id, None)
+        if pod_name:
+            self._pkill_stress(pod_name, experiment.namespace, experiment.experiment_id, "stress-ng-cpu")
+        else:
+            for pod in self._get_pods(experiment.namespace, experiment.service):
+                self._pkill_stress(pod.metadata.name, experiment.namespace, experiment.experiment_id, "stress-ng-cpu")
 
     # --- memory_stress ---
 
     def memory_stress_inject(self, experiment: Experiment):
-        deployment = self._get_deployment(experiment.namespace, experiment.service)
+        pods = self._get_pods(experiment.namespace, experiment.service)
+        if not pods:
+            raise RuntimeError(f"No running pods found for service={experiment.service}")
 
-        if any(c.name == "stress-ng-mem" for c in deployment.spec.template.spec.containers):
-            logger.info(f"[{experiment.experiment_id}] stress-ng-mem already present, skipping")
-            return
+        pod_name = pods[0].metadata.name
+        self._stress_targets[experiment.experiment_id] = pod_name
 
-        sidecar = client.V1Container(
-            name="stress-ng-mem",
-            image="alexeiled/stress-ng:latest",
-            args=["--vm", "1", "--vm-bytes", "80%", "--timeout", str(experiment.duration_seconds)],
-            resources=client.V1ResourceRequirements(
-                requests={"cpu": "64m", "memory": "256Mi"},
-                limits={"cpu": "128m", "memory": "512Mi"},
-            ),
+        body = {
+            "spec": {
+                "ephemeralContainers": [{
+                    "name": "stress-ng-mem",
+                    "image": "alexeiled/stress-ng:latest",
+                    "args": ["--vm", "1", "--vm-bytes", "80%", "--timeout", str(experiment.duration_seconds)],
+                    "resources": {
+                        "requests": {"cpu": "64m", "memory": "256Mi"},
+                        "limits": {"cpu": "128m", "memory": "512Mi"},
+                    },
+                }]
+            }
+        }
+        self.core_v1.patch_namespaced_pod_ephemeralcontainers(
+            name=pod_name, namespace=experiment.namespace, body=body
         )
-        deployment.spec.template.spec.containers.append(sidecar)
-        self._patch_deployment(experiment.namespace, experiment.service, deployment)
-        logger.info(f"[{experiment.experiment_id}] stress-ng-mem injected")
+        logger.info(f"[{experiment.experiment_id}] stress-ng-mem injected into pod={pod_name}")
 
     def memory_stress_remove(self, experiment: Experiment):
-        deployment = self._get_deployment(experiment.namespace, experiment.service)
-        deployment.spec.template.spec.containers = [
-            c for c in deployment.spec.template.spec.containers if c.name != "stress-ng-mem"
-        ]
-        self._patch_deployment(experiment.namespace, experiment.service, deployment)
-        logger.info(f"[{experiment.experiment_id}] stress-ng-mem removed")
+        pod_name = self._stress_targets.pop(experiment.experiment_id, None)
+        if pod_name:
+            self._pkill_stress(pod_name, experiment.namespace, experiment.experiment_id, "stress-ng-mem")
+        else:
+            for pod in self._get_pods(experiment.namespace, experiment.service):
+                self._pkill_stress(pod.metadata.name, experiment.namespace, experiment.experiment_id, "stress-ng-mem")
+
+    def _pkill_stress(self, pod_name: str, namespace: str, experiment_id: str, container: str):
+        try:
+            stream(
+                self.core_v1.connect_get_namespaced_pod_exec,
+                pod_name, namespace,
+                command=["pkill", "stress-ng"],
+                container=container,
+                stderr=True, stdin=False, stdout=True, tty=False,
+            )
+            logger.info(f"[{experiment_id}] stress-ng killed in pod={pod_name}")
+        except ApiException as e:
+            logger.warning(f"[{experiment_id}] pkill skipped (already exited?) pod={pod_name}: {e.status}")
 
     # --- http_error_inject ---
 
