@@ -127,3 +127,44 @@ EC2 ノードベース EKS の「ノード SG」に相当するのが Fargate �
 - `terraform/modules/vpc/variables.tf` の `private_subnet_cidrs` のデフォルト値を `/20` に変更する
 - ③ Service SG は vpc-cni アドオン有効化後に `SecurityGroupPolicy` CRD で設定する（item 7 参照）
 - public サブネットは ALB・NAT GW のみ使用するため `/24` のまま変更不要
+
+---
+
+## 4. IAM ロールとポリシー
+
+### Context
+
+EKS 固有の IAM として、Fargate Pod 実行ロールの権限範囲をどう定めるかが論点となった。AWS マネージドポリシー `AmazonEKSFargatePodExecutionRolePolicy` は ECR・CloudWatch Logs に `"Resource": "*"` を持ち、最小権限の原則に反する。
+
+### Decision
+
+**Fargate Pod 実行ロールは AWS マネージドポリシーを使わず、カスタマーマネージドポリシーで最小権限に絞る。**
+
+```
+ECR 認証:     ecr:GetAuthorizationToken          → Resource: *（AWS 仕様上変更不可）
+ECR pull:     BatchCheckLayerAvailability 等      → Resource: chaos-* リポジトリのみ
+Logs:         CreateLogGroup/Stream/PutLogEvents  → Resource: /aws/eks/chaos-cluster/*
+```
+
+その他の EKS 固有 IAM の定義場所：
+
+| リソース | 定義場所 |
+|---------|---------|
+| EKS クラスターロール | `modules/eks/main.tf`（変更不要） |
+| Fargate Pod 実行ロール | `modules/eks/main.tf`（カスタムポリシーに変更） |
+| OIDC プロバイダー | `modules/eks/main.tf`（新規追加） |
+| chaos-agent IRSA ロール | `terraform/iam.tf`（新規） |
+| FIS 実行ロール | `terraform/iam.tf`（新規） |
+| EKS アクセスエントリ（GitHub Actions） | `terraform/eks.tf`（新規） |
+
+### Rationale
+
+#### AWS マネージドポリシーを使わない理由
+
+`AmazonEKSFargatePodExecutionRolePolicy` は `Resource: *` で広く権限を与えており最小権限の原則に反する。Fargate Pod が侵害された場合、アカウント内の全 ECR リポジトリへのアクセスが可能になるリスクがある。カスタマーマネージドポリシーで `chaos-*` リポジトリと特定のロググループに絞ることでリスクを限定する。
+
+### Consequences
+
+- AWS がマネージドポリシーを更新しても自動反映されないため、必要に応じて手動で追従する
+- `ecr:GetAuthorizationToken` は AWS 仕様でリソース指定不可のため `Resource: *` が残る（許容）
+- chaos-agent IRSA ロール・FIS 実行ロールの詳細は `docs/iam-design.md` に定義済み
