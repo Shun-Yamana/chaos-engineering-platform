@@ -88,3 +88,42 @@ private のみにすると GitHub Actions（パブリックインターネット
 - `public_access_cidrs` に設定する GitHub Actions の IP 帯は定期的に変わるため、運用上の管理が必要
 - KMS キーの作成は item 8 で行う。クラスター作成前に KMS キーが存在している必要がある（depends_on の設定が必要）
 - `authenticator` ログにより IRSA のトラブルシューティングが可能になる
+
+---
+
+## 3. ネットワーク設定
+
+### Context
+
+EKS Fargate では Pod 1つが ENI 1つを占有し VPC の IP を直接消費する。既存の private サブネット `/24`（254 IP）は Pod スケールアウト時に枯渇するリスクがある。また SG の設計として Fargate 環境に適した層構造を決める必要があった。
+
+### Decision
+
+**private サブネットを `/20` に拡張し、SG をクラスター・Pod ENI・サービスの3層で設計する。**
+
+| 種別 | CIDR |
+|------|------|
+| public（ALB・NAT GW） | 10.0.0.0/24、10.0.1.0/24 |
+| private（Pod） | 10.0.16.0/20、10.0.32.0/20 |
+
+### Rationale
+
+#### private サブネットを `/20` にした理由
+
+Fargate は Pod = ENI = IP の 1対1消費のため、スケールアウトで IP が枯渇しやすい。`/20` は 1 AZ あたり 4094 IP を確保でき、大幅なスケールアウトにも対応できる。VPC `10.0.0.0/16` の空き空間に余裕があるため変更コストは低い。
+
+#### SG を3層にした理由
+
+| 層 | 対象 | 役割 |
+|----|------|------|
+| ① Cluster SG | EKS コントロールプレーン | API サーバー ↔ Pod の通信制御 |
+| ② Pod ENI SG | 全 Fargate Pod の ENI | Pod 間通信・AWS API 呼び出し |
+| ③ Service SG | サービス単位（SecurityGroupPolicy） | service-a/b・chaos-agent の個別制御 |
+
+EC2 ノードベース EKS の「ノード SG」に相当するのが Fargate では「Pod ENI SG」になる。③ は `SecurityGroupPolicy` CRD で Pod に付与し、最小権限の原則をサービス単位で実現する。
+
+### Consequences
+
+- `terraform/modules/vpc/variables.tf` の `private_subnet_cidrs` のデフォルト値を `/20` に変更する
+- ③ Service SG は vpc-cni アドオン有効化後に `SecurityGroupPolicy` CRD で設定する（item 7 参照）
+- public サブネットは ALB・NAT GW のみ使用するため `/24` のまま変更不要
