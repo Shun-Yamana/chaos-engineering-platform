@@ -180,3 +180,40 @@ Logs:         CreateLogGroup/Stream/PutLogEvents  → Resource: /aws/eks/chaos-c
 ### Rationale
 
 ADR 001 で EKS Fargate を採用済み。Fargate は Pod 単位でコンピューティングが割り当てられるためノード（EC2）の管理が不要。ノードグループを追加するとノードのパッチ管理・AMI 更新・スケーリング設定が発生し、カオスエンジニアリングのロジック実証というプロジェクト目的から外れる。
+
+---
+
+## 6. Fargate プロファイル
+
+### Context
+
+既存プロファイルは `default`（service-a/b）と `kube-system`（CoreDNS）の2つ。chaos-agent と Container Insights 用の Namespace をどう扱うかを決める必要があった。
+
+### Decision
+
+**以下の4つの Fargate プロファイルを用意する。**
+
+| プロファイル | Namespace | 用途 |
+|------------|-----------|------|
+| `default` | `default` | service-a・service-b |
+| `kube-system` | `kube-system` | CoreDNS |
+| `chaos` | `chaos` | chaos-agent |
+| `aws-observability` | `aws-observability` | Container Insights（Fluent Bit） |
+
+全プロファイルとも private サブネットに配置する。
+
+### Rationale
+
+#### `chaos` Namespace を分離した理由
+
+chaos-agent を `default` に置くと service-a/b と RBAC の境界が曖昧になる。`chaos` Namespace に分離することで ClusterRole の適用範囲が明確になり、chaos-agent の権限スコープを意図通りに制御できる。
+
+#### `aws-observability` を追加した理由
+
+EKS Fargate で CloudWatch Container Insights を有効にするには Fluent Bit を `aws-observability` Namespace で動かす必要がある。このプロファイルがないと Fluent Bit Pod が Fargate で起動できない。
+
+### Consequences
+
+- chaos-agent の ServiceAccount は `chaos` Namespace に作成する
+- IRSA の trust policy の `sub` も `system:serviceaccount:chaos:chaos-agent` になる（`docs/iam-design.md` 記載済み）
+- `aws-observability` Namespace と Fluent Bit の ConfigMap は item 12 で設定する
