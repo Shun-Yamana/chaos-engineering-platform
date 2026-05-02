@@ -168,3 +168,15 @@ Logs:         CreateLogGroup/Stream/PutLogEvents  → Resource: /aws/eks/chaos-c
 - AWS がマネージドポリシーを更新しても自動反映されないため、必要に応じて手動で追従する
 - `ecr:GetAuthorizationToken` は AWS 仕様でリソース指定不可のため `Resource: *` が残る（許容）
 - chaos-agent IRSA ロール・FIS 実行ロールの詳細は `docs/iam-design.md` に定義済み
+
+---
+
+## 5. ノードグループ設定
+
+### Decision
+
+**ノードグループは使用しない。**
+
+### Rationale
+
+ADR 001 で EKS Fargate を採用済み。Fargate は Pod 単位でコンピューティングが割り当てられるためノード（EC2）の管理が不要。ノードグループを追加するとノードのパッチ管理・AMI 更新・スケーリング設定が発生し、カオスエンジニアリングのロジック実証というプロジェクト目的から外れる。
