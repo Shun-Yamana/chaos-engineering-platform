@@ -379,3 +379,55 @@ ADR 005 で「未設定・要対応」として記録済みの積み残し。`mi
 - Network Policy は `aws-eks-addon` の vpc-cni が有効化された後に適用する
 - PDB は K8s マニフェスト（`k8s/`）に追加する
 - ECR スキャン結果は AWS Security Hub または ECR コンソールで確認する
+
+---
+
+## 12. モニタリング・オブザーバビリティ
+
+### Context
+
+カオス実験中のメトリクス監視・アラート・実験操作 UI の構成を決める必要があった。データは CloudWatch に集約済み（ADR 002・item 7）であり、その上に何を乗せるかが論点となった。
+
+### Decision
+
+**以下の構成を採用する。**
+
+```
+メトリクス監視: Amazon Managed Grafana（CloudWatch データソース）
+リアルタイムアラート: CloudWatch Alarm → SNS → Slack + auto_stopper Lambda
+実験操作 GUI: React フロントエンド（S3 + CloudFront）→ API Gateway
+```
+
+### Rationale
+
+#### Amazon Managed Grafana を選んだ理由
+
+| 選択肢 | 判断 |
+|--------|------|
+| CloudWatch ダッシュボード | 無料だが見た目がシンプルでポートフォリオとしての訴求力が低い |
+| **Amazon Managed Grafana** | 業界標準 UI・CloudWatch をそのままデータソースに使える・~$9/月 |
+| Self-hosted Grafana（EKS 上） | Managed と同等だが管理コストが上がる |
+
+Datadog・New Relic はエージェント導入コストともにスコープ外。
+
+#### CloudWatch Alarm を追加した理由
+
+現状の EventBridge 定期実行方式は SLO 違反から停止まで最大 N 分の遅延が生じる。CloudWatch Alarm は閾値超過を即時検知して SNS をトリガーするため、リアルタイム停止が実現できる。EventBridge は定期チェックのフェイルセーフとして併用する。
+
+```
+CloudWatch Alarm（エラーレート > 5%）
+  → SNS（chaos-alerts）
+  → ① Slack 通知（即時）
+  → ② auto_stopper Lambda（即時停止）
+```
+
+#### フロントエンドを S3 + CloudFront にした理由
+
+`frontend/` ディレクトリの React アプリを EKS 上に置くと管理コストが増える。静的ファイルのホスティングは S3 + CloudFront で十分であり、API Gateway エンドポイントに接続して実験の開始・停止・一覧を操作できる。
+
+### Consequences
+
+- Amazon Managed Grafana の IAM ロールに `CloudWatchReadOnlyAccess` の付与が必要
+- CloudWatch Alarm のアラーム対象メトリクスは `sli_calculator.py` が書き込む `chaos-platform/SLI` ネームスペースの値
+- S3 バケット・CloudFront ディストリビューションの Terraform 定義が必要
+- EventBridge の定期実行は Alarm のフェイルセーフとして残す
