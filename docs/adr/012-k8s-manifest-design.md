@@ -214,3 +214,31 @@ api_handler Lambda から `lambda:InvokeFunction` で chaos-agent Lambda を呼�
 - FIS template ID は `terraform apply` 後に CI/CD で `kubectl set env` により自動更新する
 - replicas:1 のため chaos-agent Pod 障害時に実験がキューに溜まる。CloudWatch Alarm で Pod の異常を検知する
 - in-memory の `_stress_targets` / `_fis_experiments` は Pod 再起動で消える。実験が中断されると DynamoDB の status が "running" のまま残る可能性があり、auto-stopper による整合性回復を期待する
+
+---
+
+## Namespace 設計
+
+### Decision
+
+**`chaos` と `default` の両 Namespace を `k8s/namespace.yaml` でマニフェスト管理し、PSS ラベルを付与する。**
+
+| Namespace | PSS ラベル | 管理方法 |
+|-----------|-----------|---------|
+| `chaos` | `enforce: baseline` | namespace.yaml で新規作成 |
+| `default` | `enforce: baseline` | namespace.yaml で既存リソースにパッチ |
+
+### Rationale
+
+#### `default` Namespace にも PSS ラベルを付けた理由
+
+service-a・b は `default` Namespace で動く。ADR 012 の Deployment 設計で baseline 準拠の SecurityContext を設定済みのため、PSS `baseline` ラベルを付けても競合しない。`chaos` だけに付けて `default` を外すと、service-a/b に特権コンテナが混入したときに検知できない。
+
+#### `default` Namespace をマニフェストで管理する理由
+
+`default` は Kubernetes 組み込みの Namespace だが、`kubectl apply` でラベルをパッチすることは可能（既存リソースの更新として扱われる）。手動 `kubectl label` で付けると CI/CD でのべき等性が保証できない。マニフェストに含めることでラベルをコードとして管理できる。
+
+### Consequences
+
+- `kubectl apply -f k8s/namespace.yaml` で `default` Namespace が PSS `baseline` に変わる。既存 Pod が baseline 違反（hostNetwork: true 等）を持つ場合は起動拒否される（本プロジェクトの Pod は準拠済みのため問題なし）
+- `chaos` Namespace の PSS を `restricted` に上げると ephemeral container が制限される可能性がある（ADR 011 item 11 で `baseline` に留めた理由と同じ）
