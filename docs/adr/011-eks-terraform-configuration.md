@@ -330,3 +330,52 @@ CMK が必要になるのは以下のケースに限られる。
 ### Rationale
 
 EKS Auto Mode は EC2 ノードの自動プロビジョニング・管理機能であり、Fargate 環境には適用されない（ADR 001 参照）。
+
+---
+
+## 11. セキュリティ設定
+
+### Decision
+
+以下の7つのセキュリティ設定を採用する。
+
+| # | 設定 | 対象 |
+|---|------|------|
+| ① | Pod Security Standards（baseline） | chaos Namespace |
+| ② | EKS アクセスエントリ（API モード） | GitHub Actions ロール |
+| ③ | Secrets Store CSI Driver | スコープ外 |
+| ④ | Network Policy | service-a/b 間の通信制御 |
+| ⑤ | Container Security Context | 全コンテナ |
+| ⑥ | ECR イメージスキャン | push 時に自動実行 |
+| ⑦ | PodDisruptionBudget | service-a・service-b |
+
+### Rationale
+
+#### ① Pod Security Standards を `baseline` にした理由
+
+`restricted` にすると ephemeral container の実行が制限される可能性があり、cpu_stress・memory_stress の注入（ADR 010）が動作しなくなる。`baseline` は特権コンテナや hostPath マウントを禁止しつつ ephemeral container を許容する現実的な選択。
+
+#### ② アクセスエントリ（API モード）
+item 2 で決定済み。`aws_eks_access_entry` で GitHub Actions ロールを登録し、`aws-auth` ConfigMap の手動管理を排除する。
+
+#### ③ Secrets Store CSI Driver は不要
+Slack webhook URL は `Experiment` dataclass で渡す設計であり、K8s Secret への同期が必要なユースケースがない。
+
+#### ④ Network Policy を追加した理由
+
+SG 3層設計（item 3）はインフラレベルの制御だが、Network Policy は K8s レベルで Pod 間通信を制御する。VPC CNI アドオンが有効なため Fargate でも使用できる。service-b からしか service-a に到達できない制御を入れることで、意図しない横断アクセスを防ぐ。
+
+#### ⑤ Container Security Context
+`runAsNonRoot`・`allowPrivilegeEscalation: false` を全コンテナに設定する。chaos-agent の ephemeral container は `pkill` を実行するため `readOnlyRootFilesystem` は対象外とする。
+
+#### ⑥ ECR イメージスキャン
+`image_scanning_configuration { scan_on_push = true }` を有効にするだけで push 時に脆弱性スキャンが走る。設定コストがほぼゼロでセキュリティの可視性が上がる。
+
+#### ⑦ PodDisruptionBudget（PDB）
+ADR 005 で「未設定・要対応」として記録済みの積み残し。`minAvailable: 1` を service-a・service-b に設定することで、pod_kill 実験中でも最低1台が稼働し続けることを保証し、実験の爆発半径を制御する。
+
+### Consequences
+
+- Network Policy は `aws-eks-addon` の vpc-cni が有効化された後に適用する
+- PDB は K8s マニフェスト（`k8s/`）に追加する
+- ECR スキャン結果は AWS Security Hub または ECR コンソールで確認する
