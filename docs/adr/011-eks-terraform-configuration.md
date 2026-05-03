@@ -291,3 +291,30 @@ CMK が必要になるのは以下のケースに限られる。
 - CMK の月額コスト（$1/月）が不要
 - キーポリシーの管理が不要
 - Fargate のため EBS 暗号化は対象外
+
+---
+
+## 9. CloudWatch ログ設定
+
+### Decision
+
+**全ロググループの保持期間を30日に統一する。API Gateway アクセスログ・VPC Flow Logs は設定しない。**
+
+| ロググループ | 保持期間 | 収集方法 |
+|-------------|---------|---------|
+| EKS コントロールプレーン（api・audit・authenticator） | 30日 | Terraform |
+| Lambda 3関数 | 30日 | Lambda が自動作成 |
+| FIS | 30日 | Terraform |
+| Pod／コンテナ | 30日 | amazon-cloudwatch-observability アドオンが自動収集 |
+
+### Rationale
+
+- デフォルトの無期限保存はコストが増加し続けるため明示的に設定する
+- Pod／コンテナログは item 7 のアドオンが自動収集するため手動設定不要
+- API Gateway アクセスログは Lambda ログで代替できるため不要
+- VPC Flow Logs は FIS network_latency 実験の観測を CloudWatch メトリクスで行うため不要
+
+### Consequences
+
+- ポートフォリオ用途のためコスト最小化を優先して30日に統一
+- 30日を超えるログ分析が必要になった場合は保持期間の変更が必要
