@@ -431,3 +431,103 @@ CloudWatch Alarm（エラーレート > 5%）
 - CloudWatch Alarm のアラーム対象メトリクスは `sli_calculator.py` が書き込む `chaos-platform/SLI` ネームスペースの値
 - S3 バケット・CloudFront ディストリビューションの Terraform 定義が必要
 - EventBridge の定期実行は Alarm のフェイルセーフとして残す
+
+---
+
+## 13. オートスケーリング
+
+### Decision
+
+**service-a・service-b に HPA を設定する。具体的な閾値・レプリカ数は実験を通じて調整する。**
+
+### Rationale
+
+Fargate 環境では Cluster Autoscaler（EC2 ノード専用）は不要。HPA のみが対象。
+
+service-a と service-b は cpu_stress・memory_stress 実験の観測対象であり、ADR 006/007 の合格基準「HPA が不要なスケールアウトをしないこと」は HPA が存在することを前提にしている。chaos-agent はスケールアウト不要のため対象外。
+
+閾値・min/maxReplicas は実験結果を見ながら調整するものであり、初期値はデプロイ後のチューニングフェーズで確定する。
+
+### Consequences
+
+- HPA マニフェストは `k8s/` に追加する
+- 初期値（CPU 70%・min 2・max 5 など）はあくまで出発点であり、実験結果に基づいて更新する
+
+---
+
+## 14. ストレージ設定
+
+### Decision
+
+**EBS・EFS 等の永続ストレージは使用しない。**
+
+### Rationale
+
+service-a・service-b・chaos-agent はいずれもステートレスな設計であり、Pod 再起動後もデータを維持する必要がない。実験レコード・SLI・SLO はすべて DynamoDB に保存するため Pod レベルの永続ストレージは不要。
+
+EKS Fargate は EBS の直接マウントをサポートしていないため、EBS を使いたい場合は EC2 ノードへの移行が必要になるが、ADR 001 で Fargate を採用済みのため該当しない。
+
+---
+
+## 15. サービスメッシュ（Istio）
+
+### Decision
+
+**Istio は使用しない。**
+
+### Rationale
+
+Istio が提供するトラフィック制御・相互 TLS・オブザーバビリティは本プロジェクトには過剰である。
+
+| 機能 | 本プロジェクトでの代替 |
+|------|----------------------|
+| トラフィック制御 | ALB ルーティング |
+| 相互 TLS | VPC 内通信（信頼境界はSGとNetworkPolicy） |
+| オブザーバビリティ | CloudWatch + Grafana（item 12） |
+
+Istio のインストール・設定・アップグレードは大きな運用コストを伴い、カオスエンジニアリングのロジック実証というプロジェクト目的から外れる。
+
+---
+
+## 16. GitOps（ArgoCD）
+
+### Decision
+
+**ArgoCD は使用しない。GitHub Actions による CI/CD を継続する。**
+
+### Rationale
+
+ArgoCD は複数チーム・複数クラスターの GitOps 管理に威力を発揮するが、本プロジェクトは単一リポジトリ・単一クラスターの1人開発である。
+
+GitHub Actions（`github-actions-role` OIDC）がすでに設計済みであり（item 4・`docs/iam-design.md`）、`kubectl apply` と Lambda デプロイを GitHub Actions で実行する構成で十分。ArgoCD を追加するとクラスター内に別の管理コンポーネントが増え、カオス実験の観測対象と混在する。
+
+---
+
+## 17. 変数定義
+
+### Decision
+
+**以下の変数を Terraform の入力変数として外部化する。**
+
+| 変数名 | 型 | 用途 |
+|-------|----|------|
+| `aws_region` | string | デプロイ先リージョン |
+| `cluster_name` | string | EKS クラスター名（デフォルト: `chaos-cluster`） |
+| `kubernetes_version` | string | Kubernetes バージョン（デフォルト: `1.32`） |
+| `private_subnet_cidrs` | list(string) | private サブネット CIDR（item 3 で `/20` に決定） |
+| `public_subnet_cidrs` | list(string) | public サブネット CIDR |
+| `github_actions_role_arn` | string | EKS アクセスエントリに登録する GitHub Actions OIDC ロール ARN |
+| `dynamodb_table_name` | string | Terraform リモートステート用 DynamoDB テーブル名 |
+| `tfstate_bucket` | string | Terraform リモートステート用 S3 バケット名 |
+| `slack_webhook_url` | string | auto-stopper の Slack 通知先（sensitive） |
+| `account_id` | string | AWS アカウント ID（ARN 構築に使用） |
+
+### Rationale
+
+ハードコードを避けてパラメータを外部化することで、リージョンやアカウントが変わっても `terraform.tfvars` の変更だけで対応できる。`slack_webhook_url` は `sensitive = true` を設定して Terraform の出力ログに表示されないようにする。
+
+### Consequences
+
+- `terraform/variables.tf` に全変数を定義する
+- `terraform/terraform.tfvars.example` を提供し、実際の値は `.gitignore` で除外する
+- `account_id` は `data "aws_caller_identity"` で動的取得する方法も有効（ハードコード回避）
