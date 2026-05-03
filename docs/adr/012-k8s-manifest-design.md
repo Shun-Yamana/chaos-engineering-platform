@@ -1,4 +1,4 @@
-# ADR 012 - K8s Deployment マニフェスト設計：service-a / service-b
+# ADR 012 - K8s Deployment マニフェスト設計：service-a / service-b / chaos-agent
 
 - Status: Accepted
 - Date: 2026-05-03
@@ -27,7 +27,7 @@ Kubernetes の Deployment マニフェストは API フィールドが多岐に�
 | 6 | `automountServiceAccountToken` | false |
 | 7 | `revisionHistoryLimit` | 3 |
 
-chaos-agent の Deployment 設計（RBAC・IRSA・SecurityContext の例外）は別 ADR に記述する。
+chaos-agent の Deployment 設計は本 ADR の「chaos-agent」セクションに記述する。
 
 ## Rationale
 
@@ -74,9 +74,81 @@ service-a・b は K8s API を直接呼ばない。デフォルトでは ServiceA
 
 デフォルト値 10 は ReplicaSet を10世代保持する。`http_error_inject` が繰り返し Deployment をパッチする性質上、履歴が蓄積しやすい。3世代で kubectl rollout undo の実用的な範囲をカバーしつつ、不要なリソースの蓄積を防ぐ。
 
-## Consequences
+## Consequences（service-a / service-b）
 
 - `readOnlyRootFilesystem: true` により、アプリケーションが `/tmp` 等への書き込みを必要とする場合は `emptyDir` ボリュームの追加が必要になる
 - `preStop: sleep 5` は `terminationGracePeriodSeconds`（デフォルト 30 秒）の範囲内であるため追加設定不要
-- chaos-agent の ephemeral container（stress-ng）には `readOnlyRootFilesystem` を適用しない（ADR 011 item 11 記載済み）
 - `topologySpreadConstraints` の `whenUnsatisfiable: DoNotSchedule` により、単一 AZ 環境では Pod が Pending になる可能性がある（本番 2AZ 構成では問題なし）
+
+---
+
+## chaos-agent Deployment 設計
+
+### Context
+
+chaos-agent は EKS Fargate 上で常駐し、DynamoDB をポーリングして実験コマンドを受け取る。service-a/b とは異なり HTTP サーバーを持たず、K8s API・AWS API を直接呼び出す。そのため SecurityContext・probe・strategy の設定が service-a/b と異なる。
+
+### Decision
+
+**chaos-agent に適用するフィールド：**
+
+| フィールド | 値 | service-a/b との差分 |
+|-----------|---|---------------------|
+| `strategy.type` | `Recreate` | RollingUpdate ではなく Recreate |
+| `replicas` | `1` | スケールアウト不要 |
+| `serviceAccountName` | `chaos-agent` | IRSA で chaos-agent-role に紐付け |
+| `automountServiceAccountToken` | `true`（明示） | IRSA に必要（false にしない） |
+| `revisionHistoryLimit` | `3` | 同じ |
+| Pod `securityContext` | runAsUser:1000, runAsGroup:1000, seccompProfile:RuntimeDefault | 同じ |
+| Container `securityContext` | runAsNonRoot, allowPrivilegeEscalation:false, **readOnlyRootFilesystem:false** | pkill のため false |
+| `terminationGracePeriodSeconds` | `30`（デフォルト） | 実験中断を許容 |
+| `livenessProbe` | なし | crash は K8s が検知。ハングは CloudWatch Alarm でカバー |
+| `topologySpreadConstraints` | なし | replicas:1 のため不要 |
+| `preStop` | なし | トラフィックを受けていない |
+| `resources` | requests: cpu:64m/mem:128Mi, limits: cpu:256m/mem:256Mi | API 呼び出しのみで軽量 |
+| `env` | FIS_TEMPLATE_SERVICE_A/B, TABLE_NAME, AWS_REGION | Terraform output から設定 |
+
+### Rationale
+
+#### strategy.type: Recreate を選んだ理由
+
+replicas:1 で RollingUpdate を使うと、更新中に旧 Pod が生きたまま新 Pod が起動し一瞬2台並走する。chaos-agent が複数台同時に動くと DynamoDB の同じ pending レコードを二重取りするリスクがある。Recreate は旧 Pod を完全停止してから新 Pod を起動するため、この問題が発生しない。
+
+#### readOnlyRootFilesystem: false にした理由
+
+cpu_stress・memory_stress 実験で ephemeral container 内の `pkill stress-ng` を実行する際、プロセスファイルシステムへのアクセスが必要（ADR 011 item 11 に記載済み）。
+
+#### livenessProbe なしにした理由
+
+chaos-agent がポーリングループで無音ハングした場合、exec probe（PID 存在確認）では検知できない。検知するには agent が定期的にファイルを更新するロジックが必要で実装コストが上がる。Pod crash は K8s が自動再起動するため、ハングのみ CloudWatch Alarm（Pod の Running 状態監視）でカバーする。
+
+#### terminationGracePeriodSeconds: 30（デフォルト）にした理由
+
+実験の duration_seconds が 30 秒を超える場合、Pod 削除時に実験が中断される。これを許容する理由：
+
+- 中断された実験は DynamoDB に status:"running" のまま残るが、auto-stopper が SLO 違反を検知して整合性を保つ
+- chaos-agent の再起動後、ポーリングで拾い直すことはしない（in-memory の `_stress_targets` が消えるため）
+- ポートフォリオ用途では実験の強制中断を完全に防ぐより、起きたときの挙動を把握していることの方が重要
+
+#### RBAC（ClusterRole）
+
+`docs/iam-design.md` §2 に定義済み。chaos Namespace の ServiceAccount `chaos-agent` に ClusterRoleBinding で付与する。
+
+| リソース | 権限 |
+|---------|------|
+| `pods` | get, list, delete |
+| `pods/ephemeralcontainers` | patch |
+| `pods/exec` | create |
+| `deployments` | get, patch |
+
+#### DynamoDB ポーリング方式（Lambda 呼び出しを外した理由）
+
+api_handler Lambda から `lambda:InvokeFunction` で chaos-agent Lambda を呼ぶ案も検討したが外した。`agent.py` は `load_incluster_config()` で書かれており、Lambda から EKS K8s API に接続するには EKS トークン取得・K8s クライアント設定の追加実装が必要で実装コストが高い。DynamoDB は既存のインフラを流用でき追加コストがない。
+
+### Consequences（chaos-agent）
+
+- `agent.py` にポーリングループの実装が必要（chaos-experiments テーブルを定期スキャンし status:"pending" を処理）
+- `lambda.tf` の api-handler ロールから `lambda:InvokeFunction` の chaos-agent 権限を削除する（DynamoDB 経由に変更）
+- FIS template ID は `terraform apply` 後に CI/CD で `kubectl set env` により自動更新する
+- replicas:1 のため chaos-agent Pod 障害時に実験がキューに溜まる。CloudWatch Alarm で Pod の異常を検知する
+- in-memory の `_stress_targets` / `_fis_experiments` は Pod 再起動で消える。実験が中断されると DynamoDB の status が "running" のまま残る可能性があり、auto-stopper による整合性回復を期待する
