@@ -1,3 +1,4 @@
+import os
 import time
 import logging
 import boto3
@@ -38,7 +39,9 @@ class ChaosAgent:
 
         self.core_v1 = client.CoreV1Api()
         self.apps_v1 = client.AppsV1Api()
-        self._stress_targets: dict[str, str] = {}  # experiment_id -> pod_name
+        self._stress_targets: dict[str, str] = {}   # experiment_id -> pod_name
+        self._fis_experiments: dict[str, str] = {}  # experiment_id -> FIS experiment id
+        self._fis = boto3.client("fis")
 
     def _get_pods(self, namespace: str, service: str) -> list:
         pods = self.core_v1.list_namespaced_pod(
@@ -213,40 +216,45 @@ class ChaosAgent:
         logger.info(f"[{experiment.experiment_id}] FAULT_RATE removed")
 
     # --- network_latency ---
+    # tc netem には NET_ADMIN が必要だが EKS Fargate は Pod レベルで封じているため
+    # AWS FIS (aws:eks:pod-network-latency) に委譲する (ADR 009, ADR 010)
 
     def network_latency_inject(self, experiment: Experiment):
-        deployment = self._get_deployment(experiment.namespace, experiment.service)
+        # FIS テンプレート ID は Terraform output から環境変数で渡す
+        # 例: FIS_TEMPLATE_SERVICE_A, FIS_TEMPLATE_SERVICE_B
+        env_key = f"FIS_TEMPLATE_{experiment.service.upper().replace('-', '_')}"
+        template_id = os.environ.get(env_key)
+        if not template_id:
+            raise RuntimeError(
+                f"FIS template ID not set: env var {env_key} is missing"
+            )
 
-        if any(c.name == "tc-latency" for c in deployment.spec.template.spec.containers):
-            logger.info(f"[{experiment.experiment_id}] tc-latency already present, skipping")
-            return
-
-        sidecar = client.V1Container(
-            name="tc-latency",
-            image="nicolaka/netshoot",
-            command=[
-                "sh", "-c",
-                f"tc qdisc add dev eth0 root netem delay {experiment.latency_ms}ms && sleep infinity",
-            ],
-            security_context=client.V1SecurityContext(
-                capabilities=client.V1Capabilities(add=["NET_ADMIN"])
-            ),
-            resources=client.V1ResourceRequirements(
-                requests={"cpu": "10m", "memory": "32Mi"},
-                limits={"cpu": "50m", "memory": "64Mi"},
-            ),
+        response = self._fis.start_experiment(
+            experimentTemplateId=template_id,
+            experimentTemplateParameters={
+                "duration": f"PT{experiment.duration_seconds}S",
+                "delayMilliseconds": str(experiment.latency_ms),
+            },
+            tags={"Project": "chaos-platform", "ExperimentId": experiment.experiment_id},
         )
-        deployment.spec.template.spec.containers.append(sidecar)
-        self._patch_deployment(experiment.namespace, experiment.service, deployment)
-        logger.info(f"[{experiment.experiment_id}] tc-latency injected ({experiment.latency_ms}ms)")
+        fis_id = response["experiment"]["id"]
+        self._fis_experiments[experiment.experiment_id] = fis_id
+        logger.info(
+            f"[{experiment.experiment_id}] FIS experiment started: {fis_id} "
+            f"latency={experiment.latency_ms}ms duration={experiment.duration_seconds}s"
+        )
 
     def network_latency_remove(self, experiment: Experiment):
-        deployment = self._get_deployment(experiment.namespace, experiment.service)
-        deployment.spec.template.spec.containers = [
-            c for c in deployment.spec.template.spec.containers if c.name != "tc-latency"
-        ]
-        self._patch_deployment(experiment.namespace, experiment.service, deployment)
-        logger.info(f"[{experiment.experiment_id}] tc-latency removed")
+        fis_id = self._fis_experiments.pop(experiment.experiment_id, None)
+        if not fis_id:
+            logger.warning(f"[{experiment.experiment_id}] no FIS experiment ID found, skipping stop")
+            return
+        try:
+            self._fis.stop_experiment(id=fis_id)
+            logger.info(f"[{experiment.experiment_id}] FIS experiment stopped: {fis_id}")
+        except self._fis.exceptions.ConflictException:
+            # 実験が duration で自然終了している場合は ConflictException になる
+            logger.info(f"[{experiment.experiment_id}] FIS experiment already completed: {fis_id}")
 
     # --- run / stop ---
 

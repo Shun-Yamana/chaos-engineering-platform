@@ -23,6 +23,12 @@ variable "private_subnet_ids" {
   type        = list(string)
 }
 
+variable "public_access_cidrs" {
+  description = "CIDR blocks allowed to reach the public EKS API endpoint"
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
+}
+
 variable "tags" {
   description = "Common tags for all resources"
   type        = map(string)
