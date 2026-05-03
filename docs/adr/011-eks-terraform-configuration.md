@@ -262,3 +262,32 @@ Container Insights と Fluent Bit を個別に手動設定する従来の方法�
 - `amazon-cloudwatch-observability` アドオン専用の IRSA ロールが必要（`CloudWatchAgentServerPolicy` を付与）
 - item 6 で追加した `aws-observability` Fargate Profile がこのアドオンの前提となる
 - item 12（モニタリング・オブザーバビリティ）はこのアドオンでほぼカバーされる
+
+---
+
+## 8. KMS 暗号化設定
+
+### Context
+
+item 2 で K8s Secrets を KMS で暗号化することを決定した。KMS キーとして AWS マネージドキーとカスタマーマネージドキー（CMK）のどちらを使うかを決める必要があった。
+
+### Decision
+
+**AWS マネージドキー（`aws/eks`）を使用する。**
+
+### Rationale
+
+CMK が必要になるのは以下のケースに限られる。
+
+- マルチアカウントでキーを共有する
+- PCI-DSS・HIPAA 等のコンプライアンス要件がある
+- 侵害時にキーを即時無効化したい
+- キー使用をリソース単位で細かく監査したい
+
+本プロジェクトは単一アカウント・ポートフォリオ用途であり上記のいずれにも該当しない。AWS マネージドキーは無料かつ自動ローテーションされるため、管理コストなしに暗号化の要件を満たせる。
+
+### Consequences
+
+- CMK の月額コスト（$1/月）が不要
+- キーポリシーの管理が不要
+- Fargate のため EBS 暗号化は対象外
