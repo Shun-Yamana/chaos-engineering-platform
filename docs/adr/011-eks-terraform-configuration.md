@@ -216,4 +216,49 @@ EKS Fargate で CloudWatch Container Insights を有効にするには Fluent Bi
 
 - chaos-agent の ServiceAccount は `chaos` Namespace に作成する
 - IRSA の trust policy の `sub` も `system:serviceaccount:chaos:chaos-agent` になる（`docs/iam-design.md` 記載済み）
-- `aws-observability` Namespace と Fluent Bit の ConfigMap は item 12 で設定する
+- `aws-observability` Namespace と Fluent Bit の ConfigMap は item 7 のアドオンで自動設定される
+
+---
+
+## 7. EKS アドオン設定
+
+### Context
+
+EKS クラスターの正常動作とオブザーバビリティに必要なアドオンを選定する必要があった。アドオンの管理方法（Helm vs EKS マネージドアドオン）は item 1 で `aws_eks_addon` に決定済み。
+
+### Decision
+
+**以下の3アドオンを使用する。**
+
+| アドオン | 用途 |
+|---------|------|
+| `coredns` | Pod の DNS 解決 |
+| `vpc-cni` | Pod への VPC IP 割り当て |
+| `amazon-cloudwatch-observability` | Container Insights（メトリクス）+ Fluent Bit（ログ）|
+
+### Rationale
+
+#### `kube-proxy` を外した理由
+
+Fargate では各 Pod が独自のネットワーク空間を持つため、iptables を管理する `kube-proxy` は動作しない。Fargate 環境では不要。
+
+#### `eks-pod-identity-agent` を外した理由
+
+IRSA の後継として AWS が推奨する新方式だが、本プロジェクトはすでに IRSA で設計済み。移行コストに見合うメリットがないためスコープ外。
+
+#### `amazon-cloudwatch-observability` を採用した理由
+
+Container Insights と Fluent Bit を個別に手動設定する従来の方法と比べ、このアドオン1つで以下をカバーできる。
+
+- CloudWatch Container Insights（メトリクス収集）
+- Fluent Bit（ログ収集・S3 転送）
+- `aws-observability` Namespace の自動セットアップ
+- Fargate 対応（Fluent Bit をサイドカーとして自動挿入）
+
+`sli_calculator.py` が依存する CloudWatch メトリクスの収集基盤がこのアドオンで整う。
+
+### Consequences
+
+- `amazon-cloudwatch-observability` アドオン専用の IRSA ロールが必要（`CloudWatchAgentServerPolicy` を付与）
+- item 6 で追加した `aws-observability` Fargate Profile がこのアドオンの前提となる
+- item 12（モニタリング・オブザーバビリティ）はこのアドオンでほぼカバーされる
