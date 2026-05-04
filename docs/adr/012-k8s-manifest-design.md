@@ -348,3 +348,54 @@ ALB はリクエスト・レスポンスのアクセスログを S3 に出力で
 
 - S3 バケットと ALB 書き込み用バケットポリシーは Terraform で管理する（実装フェーズ）
 - Ingress に `alb.ingress.kubernetes.io/load-balancer-attributes` アノテーションでログ有効化・バケット名を指定する
+
+---
+
+## CloudWatch Alarm 設計
+
+### Context
+
+カオス実験中の SLO 違反を検知し、必要に応じて実験を自動停止する安全弁として CloudWatch Alarm を設計する。ADR 005-009 の実験合格基準と閾値を一致させる必要がある。
+
+### Decision
+
+**監視項目・閾値・アクションを以下の通り定める。**
+
+| # | 監視項目 | メトリクス | 閾値 | アクション |
+|---|---------|-----------|------|-----------|
+| 1 | service-b 5xx エラーレート | ALB `HTTPCode_Target_5XX_Count / RequestCount` | **5%** 超過 | http_error_inject: auto-stopper + Slack / その他: Slack のみ |
+| 2 | レイテンシ P95 | ALB `TargetResponseTime` (p95 統計) | **1000ms** 超過 | Slack のみ |
+| 3 | chaos-agent Pod 異常 | CloudWatch Container Insights `pod_status` | Running 以外 | Slack のみ |
+
+**実験別アクション方針:**
+
+| 実験 | アクション |
+|------|-----------|
+| `http_error_inject` | CloudWatch Alarm → SNS → auto-stopper Lambda → 実験停止 + Slack 通知 |
+| その他（pod_kill / cpu_stress / memory_stress / network_latency） | CloudWatch Alarm → SNS → Slack 通知のみ |
+
+### Rationale
+
+#### http_error_inject のみ auto-stopper を付けた理由
+
+`http_error_inject` は fault_rate=0.5（50% エラー）を意図的に注入する。50% エラーが想定外の連鎖障害を引き起こした場合、人間が手動停止するまでの間に SLO が消費され続ける。ADR 008 の合格基準も「バーンレート閾値超過で auto-stopper 発動」を要求しており、自動停止が必須。
+
+その他の実験はエラーレートの急増ではなくレイテンシ増加・Pod 再起動が主な影響であり、Slack 通知で人間が状況を確認してから判断する余地がある。
+
+#### レイテンシ P95 を追加した理由
+
+ADR 006（cpu_stress）・007（memory_stress）・009（network_latency）がいずれも **P95 1000ms** を合格基準として定義している。ALB の `TargetResponseTime` メトリクスは p95 統計で CloudWatch Alarm の閾値に直接使用できる。
+
+#### chaos-agent Pod 監視を別枠にした理由
+
+chaos-agent の Running 状態は実験合格基準（service-a/b のエラーレート・レイテンシ）とは無関係。実験制御インフラの健全性監視として別枠で管理し、ダウン時は Slack に通知して手動対応する。
+
+#### 回復時間（17秒）は Alarm で監視しない理由
+
+ADR 005・007 で定義された「17秒以内の回復」は CloudWatch Alarm では直接計測できない。DynamoDB の実験 completed レコードを起点に事後評価する Lambda が担う（実装フェーズで対応）。
+
+### Consequences
+
+- auto-stopper Lambda は DynamoDB の実験ステータスを `stopped` に更新し、chaos-agent に停止を通知する実装が必要（実装フェーズ）
+- SNS トピック・CloudWatch Alarm・auto-stopper Lambda は Terraform で管理する
+- ALB の Target Group は service-b 単体で設定し、service-a と合算しない
