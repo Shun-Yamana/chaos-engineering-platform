@@ -320,3 +320,31 @@ Gateway エンドポイント（DynamoDB・S3）は無料かつ設定が簡単�
 - chaos-agent の NetworkPolicy `0.0.0.0/0:443` は Interface エンドポイント未導入のため維持する（FIS・STS・ECR が NAT 経由のため）
 - VPC エンドポイントは `terraform/vpc.tf` に `aws_vpc_endpoint` リソースとして追加する（実装フェーズ）
 - 将来 Interface エンドポイントを追加した場合は chaos-agent NetworkPolicy の `0.0.0.0/0:443` を VPC CIDR に閉じる
+
+---
+
+## S3 ログバケット設計（ALB アクセスログ）
+
+### Context
+
+ALB はリクエスト・レスポンスのアクセスログを S3 に出力できる。カオス実験中（特に `http_error_inject`）のリクエスト数・エラーレートを ALB ログで確認できるため、実験の観測手段として有効。
+
+### Decision
+
+**ALB アクセスログを S3 バケットに保存する。**
+
+| 項目 | 値 |
+|------|---|
+| バケット用途 | ALB アクセスログ |
+| ライフサイクル | 30 日で自動削除 |
+| 有効化方法 | Ingress アノテーション |
+| バケットポリシー | ALB サービスアカウントの書き込みを許可 |
+
+### Rationale
+
+カオス実験中のリクエスト・エラーレートを ALB ログで可視化できる。`http_error_inject` 実験では FAULT_RATE に応じたエラーレスポンスが記録され、実験の効果を事後検証できる。S3 ストレージコストは軽微で、ライフサイクル 30 日で DynamoDB の TTL（同 30 日）と揃える。
+
+### Consequences
+
+- S3 バケットと ALB 書き込み用バケットポリシーは Terraform で管理する（実装フェーズ）
+- Ingress に `alb.ingress.kubernetes.io/load-balancer-attributes` アノテーションでログ有効化・バケット名を指定する
