@@ -10,11 +10,9 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 dynamodb = boto3.resource("dynamodb")
-lambda_client = boto3.client("lambda")
 
 EXPERIMENT_TABLE = os.environ["EXPERIMENT_TABLE"]
 SLO_TABLE = os.environ["SLO_TABLE"]
-CHAOS_AGENT_FUNCTION = os.environ.get("CHAOS_AGENT_FUNCTION", "")
 
 
 class DecimalEncoder(json.JSONEncoder):
@@ -61,20 +59,7 @@ def start_experiment(body: dict) -> dict:
     table = dynamodb.Table(EXPERIMENT_TABLE)
     table.put_item(Item=item)
 
-    if CHAOS_AGENT_FUNCTION:
-        lambda_client.invoke(
-            FunctionName=CHAOS_AGENT_FUNCTION,
-            InvocationType="Event",
-            Payload=json.dumps({"experiment_id": experiment_id, "action": "run"}),
-        )
-        table.update_item(
-            Key={"experiment_id": experiment_id, "started_at": started_at},
-            UpdateExpression="SET #st = :running",
-            ExpressionAttributeNames={"#st": "status"},
-            ExpressionAttributeValues={":running": "running"},
-        )
-        item["status"] = "running"
-
+    # chaos-agent が DynamoDB をポーリングして status=pending を拾い実行する (ADR 012)
     logger.info(json.dumps({"action": "experiment_started", "experiment_id": experiment_id}))
     return response(201, {"experiment_id": experiment_id, "status": item["status"]})
 
