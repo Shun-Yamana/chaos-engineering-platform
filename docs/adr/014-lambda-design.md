@@ -68,10 +68,23 @@ Lambda の失敗イベントを退避するための選択肢は SQS と SNS。S
 
 Lambda を VPC 内に置くと Cold Start が増加し、かつ NAT Gateway 経由でないと AWS API に到達できない。今回の Lambda は VPC 内リソース（RDS 等）へのアクセスが不要であり、VPC 外から直接 DynamoDB・SNS・CloudWatch を呼ぶ構成が合理的。
 
+### sli_calculator のメトリクスソースを ALB に切り替えた理由
+
+当初 `ContainerInsights` の `pod_network_rx_bytes` でリクエスト数を代替し、カスタム名前空間 `{PROJECT_NAME}/SLI` から 5xx カウントを取得する設計だった。しかしカスタムメトリクスを書き込む仕組みが存在せず、実際には機能しない実装だった。
+
+ALB は `AWS/ApplicationELB` 名前空間に `HTTPCode_Target_5XX_Count` と `RequestCount` を標準で出力するため、追加実装なしでエラーレートを計算できる。service-a は ALB を持たないが、service-a の障害は service-b のエラーレート上昇として観測できるため、service-b の ALB メトリクスのみで E2E の健全性を監視する。
+
+### auto_stopper の SNS イベント対応を追加した理由
+
+当初 EventBridge（毎分ポーリング）のみを想定していたが、SNS（CloudWatch Alarm 発火）からも呼ばれるようになった（ADR 012）。SNS イベントの `NewStateValue` が `"ALARM"` でない場合（OK 回復通知など）は早期リターンし、ALARM 時のみ既存の停止ロジックを実行する。
+
 ## Consequences
 
-- SQS DLQ リソースを lambda.tf に追加する
-- 全 Lambda ロールに `AWSXRayDaemonWriteAccess` ポリシーアタッチメントを追加する
-- 3 つの CloudWatch ロググループ（保持期間 30 日）を cloudwatch.tf に追加する
-- api_gateway.tf の `CHAOS_AGENT_FUNCTION` 環境変数と対応 IAM を削除する
-- DLQ への `sqs:SendMessage` 権限を全 Lambda ロールに追加する
+- SQS DLQ リソースを lambda.tf に追加する ✅
+- 全 Lambda ロールに `AWSXRayDaemonWriteAccess` ポリシーアタッチメントを追加する ✅
+- 3 つの CloudWatch ロググループ（保持期間 30 日）を cloudwatch.tf に追加する ✅
+- api_gateway.tf の `CHAOS_AGENT_FUNCTION` 環境変数と対応 IAM を削除する ✅
+- DLQ への `sqs:SendMessage` 権限を全 Lambda ロールに追加する ✅
+- sli_calculator のメトリクスソースを `AWS/ApplicationELB` に切り替え、`ALB_ARN_SUFFIX` 環境変数を追加する ✅
+- auto_stopper に SNS イベントハンドリングを追加する ✅
+- `ALB_ARN_SUFFIX` は ALB 作成後（kubectl apply ingress 後）に `terraform apply` で反映する
