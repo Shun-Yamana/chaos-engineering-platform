@@ -1,16 +1,24 @@
 import os
 import time
 import logging
+import threading
 import boto3
 from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 from kubernetes.stream import stream
+from boto3.dynamodb.conditions import Attr
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
 logger = logging.getLogger(__name__)
 
 dynamodb = boto3.resource("dynamodb")
+
+TABLE_NAME = os.environ.get("TABLE_NAME", "")
 
 
 @dataclass
@@ -258,6 +266,24 @@ class ChaosAgent:
 
     # --- run / stop ---
 
+    def _interruptible_sleep(self, experiment: Experiment, seconds: int, check_interval: int = 5) -> bool:
+        """duration_seconds 分スリープしつつ DynamoDB の status を定期確認する。
+        外部から status=stopped にされた場合は False を返して早期終了する。"""
+        table = dynamodb.Table(experiment.experiment_table)
+        elapsed = 0
+        while elapsed < seconds:
+            time.sleep(min(check_interval, seconds - elapsed))
+            elapsed += check_interval
+
+            resp = table.get_item(Key={
+                "experiment_id": experiment.experiment_id,
+                "started_at": experiment.started_at,
+            })
+            if resp.get("Item", {}).get("status") == "stopped":
+                logger.info(f"[{experiment.experiment_id}] external stop detected")
+                return False
+        return True
+
     def run(self, experiment: Experiment):
         experiment.started_at = datetime.now(timezone.utc).isoformat()
         self._record_experiment(experiment, "running")
@@ -266,27 +292,35 @@ class ChaosAgent:
             if experiment.fault_type == "pod_kill":
                 self.pod_kill(experiment)
                 logger.info(f"[{experiment.experiment_id}] waiting {experiment.duration_seconds}s for recovery observation")
-                time.sleep(experiment.duration_seconds)
+                self._interruptible_sleep(experiment, experiment.duration_seconds)
 
             elif experiment.fault_type == "cpu_stress":
                 self.cpu_stress_inject(experiment)
-                time.sleep(experiment.duration_seconds)
+                stopped = self._interruptible_sleep(experiment, experiment.duration_seconds)
                 self.cpu_stress_remove(experiment)
+                if not stopped:
+                    return
 
             elif experiment.fault_type == "memory_stress":
                 self.memory_stress_inject(experiment)
-                time.sleep(experiment.duration_seconds)
+                stopped = self._interruptible_sleep(experiment, experiment.duration_seconds)
                 self.memory_stress_remove(experiment)
+                if not stopped:
+                    return
 
             elif experiment.fault_type == "http_error_inject":
                 self.http_error_inject(experiment)
-                time.sleep(experiment.duration_seconds)
+                stopped = self._interruptible_sleep(experiment, experiment.duration_seconds)
                 self.http_error_remove(experiment)
+                if not stopped:
+                    return
 
             elif experiment.fault_type == "network_latency":
                 self.network_latency_inject(experiment)
-                time.sleep(experiment.duration_seconds)
+                stopped = self._interruptible_sleep(experiment, experiment.duration_seconds)
                 self.network_latency_remove(experiment)
+                if not stopped:
+                    return
 
             else:
                 raise ValueError(f"Unknown fault_type: {experiment.fault_type}")
@@ -299,7 +333,7 @@ class ChaosAgent:
         self._record_experiment(experiment, "completed")
         logger.info(f"[{experiment.experiment_id}] experiment completed")
 
-    def stop(self, experiment: Experiment, reason: str = "manual"):
+    def stop(self, experiment: Experiment, reason: str = "manual"):  # noqa: D401
         cleanup = {
             "cpu_stress": self.cpu_stress_remove,
             "memory_stress": self.memory_stress_remove,
@@ -314,3 +348,106 @@ class ChaosAgent:
 
         self._record_experiment(experiment, "stopped", stop_reason=reason)
         logger.info(f"[{experiment.experiment_id}] experiment stopped: {reason}")
+
+
+# ---------------------------------------------------------------------------
+# DynamoDB ポーリングループ
+# ---------------------------------------------------------------------------
+
+def _item_to_experiment(item: dict) -> Experiment:
+    return Experiment(
+        experiment_id=item["experiment_id"],
+        name=item["name"],
+        namespace=item.get("namespace", "default"),
+        service=item["target_service"],
+        fault_type=item["fault_type"],
+        duration_seconds=int(item["duration_seconds"]),
+        error_rate_threshold=float(item.get("error_rate_threshold", 0.05)),
+        burn_rate_threshold=float(item.get("burn_rate_threshold", 2.0)),
+        slack_webhook_url=item.get("slack_webhook_url"),
+        experiment_table=TABLE_NAME,
+        started_at=item.get("started_at"),
+        latency_ms=int(item.get("latency_ms", 500)),
+        fault_rate=float(item.get("fault_rate", 0.5)),
+    )
+
+
+class ChaosAgentPoller:
+    def __init__(self, agent: ChaosAgent, table_name: str, poll_interval: int = 10):
+        self._agent = agent
+        self._table = dynamodb.Table(table_name)
+        self._poll_interval = poll_interval
+        self._running: dict[str, threading.Thread] = {}
+
+    def _scan_pending(self) -> list[dict]:
+        resp = self._table.scan(
+            FilterExpression=Attr("status").eq("pending"),
+        )
+        return resp.get("Items", [])
+
+    def _claim(self, item: dict) -> bool:
+        """pending → running へ条件付き更新。競合時は False を返す。"""
+        try:
+            self._table.update_item(
+                Key={
+                    "experiment_id": item["experiment_id"],
+                    "started_at": item["started_at"],
+                },
+                UpdateExpression="SET #st = :running",
+                ConditionExpression=Attr("status").eq("pending"),
+                ExpressionAttributeNames={"#st": "status"},
+                ExpressionAttributeValues={":running": "running"},
+            )
+            return True
+        except self._table.meta.client.exceptions.ConditionalCheckFailedException:
+            return False
+
+    def _run_experiment(self, experiment: Experiment):
+        try:
+            self._agent.run(experiment)
+        except Exception as e:
+            logger.error(f"[{experiment.experiment_id}] thread error: {e}")
+        finally:
+            self._running.pop(experiment.experiment_id, None)
+
+    def _poll(self):
+        # 完了スレッドを整理
+        done = [eid for eid, t in self._running.items() if not t.is_alive()]
+        for eid in done:
+            self._running.pop(eid, None)
+
+        for item in self._scan_pending():
+            eid = item["experiment_id"]
+            if eid in self._running:
+                continue
+            if not self._claim(item):
+                continue
+
+            experiment = _item_to_experiment(item)
+            thread = threading.Thread(
+                target=self._run_experiment,
+                args=(experiment,),
+                daemon=True,
+                name=f"experiment-{eid[:8]}",
+            )
+            self._running[eid] = thread
+            thread.start()
+            logger.info(f"[{eid}] experiment thread started: {experiment.fault_type}")
+
+    def run_forever(self):
+        logger.info(f"chaos-agent poller started (interval={self._poll_interval}s, table={self._table.name})")
+        while True:
+            try:
+                self._poll()
+            except Exception as e:
+                logger.error(f"poll error: {e}")
+            time.sleep(self._poll_interval)
+
+
+if __name__ == "__main__":
+    if not TABLE_NAME:
+        raise RuntimeError("TABLE_NAME environment variable is required")
+
+    chaos_agent = ChaosAgent()
+    poller = ChaosAgentPoller(chaos_agent, TABLE_NAME, poll_interval=10)
+    poller.run_forever()
