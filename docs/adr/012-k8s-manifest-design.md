@@ -242,3 +242,51 @@ service-a・b は `default` Namespace で動く。ADR 012 の Deployment 設計�
 
 - `kubectl apply -f k8s/namespace.yaml` で `default` Namespace が PSS `baseline` に変わる。既存 Pod が baseline 違反（hostNetwork: true 等）を持つ場合は起動拒否される（本プロジェクトの Pod は準拠済みのため問題なし）
 - `chaos` Namespace の PSS を `restricted` に上げると ephemeral container が制限される可能性がある（ADR 011 item 11 で `baseline` に留めた理由と同じ）
+
+---
+
+## 外部アクセス設計（CloudFront → ALB → service-b）
+
+### Context
+
+service-b は外部からのリクエストを受け付けるエントリポイント。EKS Fargate では NodePort が使えないため、ALB を IP モードで使う AWS Load Balancer Controller（LBC）が必要。
+
+service-a は service-b からのみ呼ばれる内部サービスのため、外部アクセス経路は不要。
+
+### Decision
+
+**CloudFront → ALB（internal）→ service-b（ClusterIP + Ingress）の構成とする。**
+
+| 項目 | 決定 |
+|------|------|
+| 外部エントリポイント | CloudFront |
+| ALB スキーム | `internal`（VPC 内のみ） |
+| Service type | `ClusterIP` + Ingress |
+| ターゲットタイプ | `ip`（Fargate 固定） |
+| LBC インストール | Helm + IRSA |
+| CloudFront → ALB 認証 | カスタムヘッダーで直アクセス防止 |
+
+### Rationale
+
+#### CloudFront を前段に置き ALB を internal にした理由
+
+ALB を `internet-facing` にすると ALB の DNS 名を知れば誰でも直接アクセスできる。`internal` にして CloudFront 経由のみ許可することで ALB への直接アクセスを防ぐ。CloudFront は固定のカスタムヘッダー（例: `X-Origin-Verify`）を付与し、ALB のリスナールールで該当ヘッダーがないリクエストを 403 で弾く。
+
+#### NLB ではなく ALB を選んだ理由
+
+CloudFront の origin に ALB を指定する場合、HTTP/HTTPS（L7）で通信するため ALB が適切。NLB は L4 のみで HTTP ヘッダー検査ができず、カスタムヘッダーによる origin 認証を実装できない。
+
+#### Service type を ClusterIP + Ingress にした理由
+
+`LoadBalancer` type は NLB を自動作成するが、今回は LBC + Ingress で ALB を管理する。ClusterIP + Ingress の構成により ALB の詳細設定（アノテーション）を Ingress リソースに集約できる。
+
+#### ターゲットタイプを ip にした理由
+
+EKS Fargate は仮想ノードが Pod ごとに存在するため、`instance` モードで登録できるノードがない。`ip` モードで Pod IP を直接ターゲットグループに登録する必要がある（Fargate の制約）。
+
+### Consequences
+
+- ALB は `internal` のため、CloudFront の Origin として ALB DNS 名を設定する必要がある
+- カスタムヘッダーの値はシークレットとして管理し、CloudFront の Origin カスタムヘッダーと ALB リスナールールの両方に同じ値を設定する
+- LBC の Helm インストールと IRSA ロールは Terraform で管理する（実装フェーズ）
+- service-b の NetworkPolicy（③）は ALB サブネット CIDR からの Ingress を許可済み（本 ADR NetworkPolicy セクション参照）
