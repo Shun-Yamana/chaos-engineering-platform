@@ -290,3 +290,33 @@ EKS Fargate は仮想ノードが Pod ごとに存在するため、`instance` �
 - カスタムヘッダーの値はシークレットとして管理し、CloudFront の Origin カスタムヘッダーと ALB リスナールールの両方に同じ値を設定する
 - LBC の Helm インストールと IRSA ロールは Terraform で管理する（実装フェーズ）
 - service-b の NetworkPolicy（③）は ALB サブネット CIDR からの Ingress を許可済み（本 ADR NetworkPolicy セクション参照）
+
+---
+
+## VPC エンドポイント設計
+
+### Context
+
+chaos-agent は DynamoDB（ポーリング）・FIS・STS（IRSA）・CloudWatch Logs といった AWS サービスを呼び出す。EKS Fargate のコンテナイメージプルも ECR / S3 を経由する。これらのトラフィックを NAT Gateway 経由にするか VPC エンドポイント経由にするかを決定する。
+
+### Decision
+
+**Gateway エンドポイント（DynamoDB・S3）のみ追加する。Interface エンドポイントは導入しない。**
+
+| サービス | エンドポイント種別 | 採用 |
+|---------|-----------------|------|
+| DynamoDB | Gateway（無料） | ✅ |
+| S3 | Gateway（無料） | ✅ |
+| FIS / STS / ECR / CloudWatch Logs | Interface（時間課金 × AZ 数） | ❌ NAT Gateway 経由 |
+
+### Rationale
+
+ポートフォリオ規模では chaos-agent の AWS API 呼び出し頻度・データ量ともに小さく、NAT Gateway のデータ転送コストは無視できる。Interface エンドポイントを追加すると AZ × 時間課金が発生しコストが増える一方、メリット（レイテンシ・セキュリティ）はこの規模では体感できない。
+
+Gateway エンドポイント（DynamoDB・S3）は無料かつ設定が簡単で、AWS のベストプラクティスとして常に追加すべきものであるため採用する。
+
+### Consequences
+
+- chaos-agent の NetworkPolicy `0.0.0.0/0:443` は Interface エンドポイント未導入のため維持する（FIS・STS・ECR が NAT 経由のため）
+- VPC エンドポイントは `terraform/vpc.tf` に `aws_vpc_endpoint` リソースとして追加する（実装フェーズ）
+- 将来 Interface エンドポイントを追加した場合は chaos-agent NetworkPolicy の `0.0.0.0/0:443` を VPC CIDR に閉じる
