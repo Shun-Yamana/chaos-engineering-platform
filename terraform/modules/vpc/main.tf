@@ -105,3 +105,32 @@ resource "aws_route_table_association" "private" {
   subnet_id      = aws_subnet.private[count.index].id
   route_table_id = aws_route_table.private[count.index].id
 }
+
+# ---------------------------------------------------------------------------
+# VPC Gateway Endpoints — DynamoDB & S3 (ADR 012: VPC エンドポイント設計)
+# Gateway エンドポイントは無料。Interface エンドポイントは NAT Gateway に委譲。
+# ---------------------------------------------------------------------------
+
+data "aws_region" "current" {}
+
+resource "aws_vpc_endpoint" "dynamodb" {
+  vpc_id            = aws_vpc.main.id
+  service_name      = "com.amazonaws.${data.aws_region.current.name}.dynamodb"
+  vpc_endpoint_type = "Gateway"
+  route_table_ids   = concat([aws_route_table.public.id], aws_route_table.private[*].id)
+
+  tags = merge(var.tags, {
+    Name = "${var.project_name}-vpce-dynamodb"
+  })
+}
+
+resource "aws_vpc_endpoint" "s3" {
+  vpc_id            = aws_vpc.main.id
+  service_name      = "com.amazonaws.${data.aws_region.current.name}.s3"
+  vpc_endpoint_type = "Gateway"
+  route_table_ids   = concat([aws_route_table.public.id], aws_route_table.private[*].id)
+
+  tags = merge(var.tags, {
+    Name = "${var.project_name}-vpce-s3"
+  })
+}

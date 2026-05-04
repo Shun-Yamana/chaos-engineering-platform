@@ -204,3 +204,12 @@ resource "aws_lambda_permission" "auto_stopper_eventbridge" {
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.auto_stopper_schedule.arn
 }
+
+# SNS → auto-stopper (CloudWatch Alarm 発火時の即時トリガー)
+resource "aws_lambda_permission" "auto_stopper_sns" {
+  statement_id  = "AllowExecutionFromSNS"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.auto_stopper.function_name
+  principal     = "sns.amazonaws.com"
+  source_arn    = aws_sns_topic.chaos_alerts.arn
+}

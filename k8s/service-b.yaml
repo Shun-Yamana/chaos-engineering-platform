@@ -5,14 +5,33 @@ metadata:
   namespace: default
 spec:
   replicas: 2
+  revisionHistoryLimit: 3
   selector:
     matchLabels:
       app: service-b
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   template:
     metadata:
       labels:
         app: service-b
     spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: service-b
       containers:
         - name: service-b
           image: SERVICE_B_IMAGE
@@ -21,6 +40,16 @@ spec:
           env:
             - name: SERVICE_A_URL
               value: "http://service-a/"
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           readinessProbe:
             httpGet:
               path: /health
@@ -47,9 +76,10 @@ metadata:
   name: service-b
   namespace: default
 spec:
+  type: ClusterIP
   selector:
     app: service-b
   ports:
     - protocol: TCP
-      port: 80
+      port: 8000
       targetPort: 8000

@@ -62,3 +62,9 @@ variable "slack_webhook_url" {
   type        = string
   sensitive   = true
 }
+
+variable "alb_arn_suffix" {
+  description = "ALB ARN suffix for CloudWatch Alarm dimensions (e.g. app/k8s-default-serviceb-xxx/xxx). Set after kubectl apply -f k8s/ingress.yaml."
+  type        = string
+  default     = ""
+}

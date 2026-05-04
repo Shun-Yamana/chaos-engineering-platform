@@ -26,7 +26,11 @@ resource "aws_eks_addon" "coredns" {
 resource "aws_eks_addon" "vpc_cni" {
   cluster_name = module.eks.cluster_name
   addon_name   = "vpc-cni"
-  tags         = local.common_tags
+  # NetworkPolicy 強制を有効化 (ADR 012: NetworkPolicy 設計 ⑤)
+  configuration_values = jsonencode({
+    enableNetworkPolicy = "true"
+  })
+  tags = local.common_tags
 
   depends_on = [module.eks]
 }
