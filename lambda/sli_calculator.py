@@ -14,64 +14,42 @@ PROJECT_NAME = os.environ["PROJECT_NAME"]
 SLI_TABLE = os.environ["SLI_TABLE"]
 SLO_TABLE = os.environ["SLO_TABLE"]
 WINDOW_MINUTES = int(os.environ.get("WINDOW_MINUTES", "5"))
+# ALB ARN suffix: app/<name>/<hex> — kubectl get ingress で取得後に設定
+ALB_ARN_SUFFIX = os.environ.get("ALB_ARN_SUFFIX", "")
 
-SERVICES = ["service-a", "service-b"]
+# service-a は ALB を持たず service-b 経由でのみ外部公開される。
+# ALB メトリクスで service-b のエンドツーエンド健全性を監視し、
+# service-a の障害は service-b のエラーレート上昇として観測する。
+SERVICES = ["service-b"]
 
 
-def get_error_rate(service: str, end_time: datetime, window_minutes: int) -> float:
+def get_error_rate(end_time: datetime, window_minutes: int) -> float:
+    if not ALB_ARN_SUFFIX:
+        logger.warning("ALB_ARN_SUFFIX not set, skipping metric query")
+        return 0.0
+
     start_time = end_time - timedelta(minutes=window_minutes)
+    period = window_minutes * 60
+    dimensions = [{"Name": "LoadBalancer", "Value": ALB_ARN_SUFFIX}]
 
-    namespace = "ContainerInsights"
-    dimensions = [
-        {"Name": "ClusterName", "Value": f"{PROJECT_NAME}-cluster"},
-        {"Name": "ServiceName", "Value": service},
-    ]
-
-    def query_metric(metric_name: str) -> float:
+    def query_sum(metric_name: str) -> float:
         resp = cloudwatch.get_metric_statistics(
-            Namespace=namespace,
+            Namespace="AWS/ApplicationELB",
             MetricName=metric_name,
             Dimensions=dimensions,
             StartTime=start_time,
             EndTime=end_time,
-            Period=window_minutes * 60,
+            Period=period,
             Statistics=["Sum"],
         )
         datapoints = resp.get("Datapoints", [])
         return datapoints[0]["Sum"] if datapoints else 0.0
 
-    total_requests = query_metric("pod_network_rx_bytes")
-    if total_requests == 0:
-        return 0.0
-
-    # 5xxエラーをCloudWatch Logsのメトリクスフィルターから取得
-    error_resp = cloudwatch.get_metric_statistics(
-        Namespace=f"{PROJECT_NAME}/SLI",
-        MetricName="5xxErrors",
-        Dimensions=[{"Name": "ServiceName", "Value": service}],
-        StartTime=start_time,
-        EndTime=end_time,
-        Period=window_minutes * 60,
-        Statistics=["Sum"],
-    )
-    error_datapoints = error_resp.get("Datapoints", [])
-    error_count = error_datapoints[0]["Sum"] if error_datapoints else 0.0
-
-    request_resp = cloudwatch.get_metric_statistics(
-        Namespace=f"{PROJECT_NAME}/SLI",
-        MetricName="TotalRequests",
-        Dimensions=[{"Name": "ServiceName", "Value": service}],
-        StartTime=start_time,
-        EndTime=end_time,
-        Period=window_minutes * 60,
-        Statistics=["Sum"],
-    )
-    request_datapoints = request_resp.get("Datapoints", [])
-    request_count = request_datapoints[0]["Sum"] if request_datapoints else 0.0
-
+    request_count = query_sum("RequestCount")
     if request_count == 0:
         return 0.0
 
+    error_count = query_sum("HTTPCode_Target_5XX_Count")
     return error_count / request_count
 
 
@@ -113,7 +91,7 @@ def handler(event, context):
     results = []
     for service in SERVICES:
         slo = get_slo(service)
-        error_rate = get_error_rate(service, now, WINDOW_MINUTES)
+        error_rate = get_error_rate(now, WINDOW_MINUTES)
         burn_rate = calculate_burn_rate(error_rate, slo)
 
         save_sli(service, error_rate, burn_rate, timestamp)
