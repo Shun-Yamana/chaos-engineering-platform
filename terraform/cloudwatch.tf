@@ -13,6 +13,28 @@ resource "aws_cloudwatch_log_group" "fis" {
 }
 
 # ---------------------------------------------------------------------------
+# Lambda ロググループ (ADR 014: logging_config JSON 形式)
+# ---------------------------------------------------------------------------
+
+resource "aws_cloudwatch_log_group" "lambda_sli_calculator" {
+  name              = "/aws/lambda/${var.project_name}-sli-calculator"
+  retention_in_days = 30
+  tags              = local.common_tags
+}
+
+resource "aws_cloudwatch_log_group" "lambda_auto_stopper" {
+  name              = "/aws/lambda/${var.project_name}-auto-stopper"
+  retention_in_days = 30
+  tags              = local.common_tags
+}
+
+resource "aws_cloudwatch_log_group" "lambda_api_handler" {
+  name              = "/aws/lambda/${var.project_name}-api-handler"
+  retention_in_days = 30
+  tags              = local.common_tags
+}
+
+# ---------------------------------------------------------------------------
 # CloudWatch Alarms (ADR 012: CloudWatch Alarm 設計)
 # ALB メトリクスは ALB が作成された後に有効になる (var.alb_arn_suffix が必要)
 # ---------------------------------------------------------------------------

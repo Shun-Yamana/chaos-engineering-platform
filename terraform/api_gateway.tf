@@ -16,6 +16,11 @@ resource "aws_iam_role_policy_attachment" "api_handler_basic_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
+resource "aws_iam_role_policy_attachment" "api_handler_xray" {
+  role       = aws_iam_role.lambda_api_handler.name
+  policy_arn = "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess"
+}
+
 resource "aws_iam_policy" "lambda_api_handler_policy" {
   name = "${var.project_name}-lambda-api-handler-policy"
 
@@ -38,9 +43,9 @@ resource "aws_iam_policy" "lambda_api_handler_policy" {
       },
       {
         Effect   = "Allow"
-        Action   = ["lambda:InvokeFunction"]
-        Resource = aws_lambda_function.sli_calculator.arn
-      }
+        Action   = ["sqs:SendMessage"]
+        Resource = aws_sqs_queue.lambda_dlq.arn
+      },
     ]
   })
 }
@@ -58,14 +63,30 @@ resource "aws_lambda_function" "api_handler" {
   runtime          = "python3.13"
   source_code_hash = data.archive_file.api_handler.output_base64sha256
   timeout          = 30
+  memory_size      = 256
+  architectures    = ["arm64"]
 
   environment {
     variables = {
-      PROJECT_NAME       = var.project_name
-      EXPERIMENT_TABLE   = aws_dynamodb_table.experiment_history.name
-      SLO_TABLE          = aws_dynamodb_table.slo_definitions.name
-      CHAOS_AGENT_FUNCTION = aws_lambda_function.sli_calculator.function_name
+      PROJECT_NAME     = var.project_name
+      EXPERIMENT_TABLE = aws_dynamodb_table.experiment_history.name
+      SLO_TABLE        = aws_dynamodb_table.slo_definitions.name
     }
+  }
+
+  tracing_config {
+    mode = "Active"
+  }
+
+  dead_letter_config {
+    target_arn = aws_sqs_queue.lambda_dlq.arn
+  }
+
+  logging_config {
+    log_format            = "JSON"
+    application_log_level = "INFO"
+    system_log_level      = "WARN"
+    log_group             = "/aws/lambda/${var.project_name}-api-handler"
   }
 
   tags = local.common_tags

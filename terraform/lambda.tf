@@ -1,3 +1,13 @@
+# ---------------------------------------------------------------------------
+# 共有 DLQ — 全 Lambda 失敗イベントの退避 (ADR 014)
+# ---------------------------------------------------------------------------
+
+resource "aws_sqs_queue" "lambda_dlq" {
+  name                      = "${var.project_name}-lambda-dlq"
+  message_retention_seconds = 1209600 # 14 日
+  tags                      = local.common_tags
+}
+
 data "aws_iam_policy_document" "lambda_assume_role" {
   statement {
     effect = "Allow"
@@ -19,6 +29,11 @@ resource "aws_iam_role" "lambda_sli_calculator" {
 resource "aws_iam_role_policy_attachment" "lambda_basic_execution" {
   role       = aws_iam_role.lambda_sli_calculator.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "sli_calculator_xray" {
+  role       = aws_iam_role.lambda_sli_calculator.name
+  policy_arn = "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess"
 }
 
 resource "aws_iam_policy" "lambda_sli_policy" {
@@ -48,7 +63,12 @@ resource "aws_iam_policy" "lambda_sli_policy" {
           aws_dynamodb_table.sli_metrics.arn,
           aws_dynamodb_table.experiment_history.arn,
         ]
-      }
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["sqs:SendMessage"]
+        Resource = aws_sqs_queue.lambda_dlq.arn
+      },
     ]
   })
 }
@@ -72,14 +92,31 @@ resource "aws_lambda_function" "sli_calculator" {
   runtime          = "python3.13"
   source_code_hash = data.archive_file.sli_calculator.output_base64sha256
   timeout          = 30
+  memory_size      = 256
+  architectures    = ["arm64"]
 
   environment {
     variables = {
-      PROJECT_NAME     = var.project_name
-      SLI_TABLE        = aws_dynamodb_table.sli_metrics.name
-      SLO_TABLE        = aws_dynamodb_table.slo_definitions.name
-      WINDOW_MINUTES   = "1"
+      PROJECT_NAME   = var.project_name
+      SLI_TABLE      = aws_dynamodb_table.sli_metrics.name
+      SLO_TABLE      = aws_dynamodb_table.slo_definitions.name
+      WINDOW_MINUTES = "1"
     }
+  }
+
+  tracing_config {
+    mode = "Active"
+  }
+
+  dead_letter_config {
+    target_arn = aws_sqs_queue.lambda_dlq.arn
+  }
+
+  logging_config {
+    log_format            = "JSON"
+    application_log_level = "INFO"
+    system_log_level      = "WARN"
+    log_group             = "/aws/lambda/${var.project_name}-sli-calculator"
   }
 
   tags = local.common_tags
@@ -121,6 +158,11 @@ resource "aws_iam_role_policy_attachment" "auto_stopper_basic_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
+resource "aws_iam_role_policy_attachment" "auto_stopper_xray" {
+  role       = aws_iam_role.lambda_auto_stopper.name
+  policy_arn = "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess"
+}
+
 resource "aws_iam_policy" "lambda_auto_stopper_policy" {
   name = "${var.project_name}-lambda-auto-stopper-policy"
 
@@ -145,7 +187,12 @@ resource "aws_iam_policy" "lambda_auto_stopper_policy" {
         Effect   = "Allow"
         Action   = ["sns:Publish"]
         Resource = aws_sns_topic.chaos_alerts.arn
-      }
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["sqs:SendMessage"]
+        Resource = aws_sqs_queue.lambda_dlq.arn
+      },
     ]
   })
 }
@@ -169,15 +216,32 @@ resource "aws_lambda_function" "auto_stopper" {
   runtime          = "python3.13"
   source_code_hash = data.archive_file.auto_stopper.output_base64sha256
   timeout          = 30
+  memory_size      = 128
+  architectures    = ["arm64"]
 
   environment {
     variables = {
-      PROJECT_NAME       = var.project_name
-      SLI_TABLE          = aws_dynamodb_table.sli_metrics.name
-      SLO_TABLE          = aws_dynamodb_table.slo_definitions.name
-      EXPERIMENT_TABLE   = aws_dynamodb_table.experiment_history.name
-      SNS_TOPIC_ARN      = aws_sns_topic.chaos_alerts.arn
+      PROJECT_NAME     = var.project_name
+      SLI_TABLE        = aws_dynamodb_table.sli_metrics.name
+      SLO_TABLE        = aws_dynamodb_table.slo_definitions.name
+      EXPERIMENT_TABLE = aws_dynamodb_table.experiment_history.name
+      SNS_TOPIC_ARN    = aws_sns_topic.chaos_alerts.arn
     }
+  }
+
+  tracing_config {
+    mode = "Active"
+  }
+
+  dead_letter_config {
+    target_arn = aws_sqs_queue.lambda_dlq.arn
+  }
+
+  logging_config {
+    log_format            = "JSON"
+    application_log_level = "INFO"
+    system_log_level      = "WARN"
+    log_group             = "/aws/lambda/${var.project_name}-auto-stopper"
   }
 
   tags = local.common_tags
