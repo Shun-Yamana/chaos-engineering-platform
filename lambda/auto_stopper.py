@@ -96,6 +96,28 @@ def publish_alert(service: str, sli: dict, slo: dict, experiment_id: str, reason
 
 
 def handler(event, context):
+    # SNS トリガー（CloudWatch Alarm 発火）の場合: ALARM 状態のみ処理し OK 回復は無視する
+    if "Records" in event:
+        for record in event.get("Records", []):
+            if record.get("EventSource") == "aws:sns":
+                try:
+                    sns_message = json.loads(record["Sns"]["Message"])
+                except (KeyError, json.JSONDecodeError):
+                    logger.warning("Failed to parse SNS message")
+                    continue
+
+                state = sns_message.get("NewStateValue")
+                if state != "ALARM":
+                    logger.info(json.dumps({"action": "sns_skipped", "state": state}))
+                    return {"statusCode": 200, "stopped_experiments": []}
+
+                logger.info(json.dumps({
+                    "action": "sns_alarm_received",
+                    "alarm": sns_message.get("AlarmName"),
+                    "reason": sns_message.get("NewStateReason"),
+                }))
+
+    # EventBridge（毎分）または SNS（Alarm）どちらのトリガーでも同じ停止ロジックを実行
     stopped = []
 
     for service in SERVICES:
