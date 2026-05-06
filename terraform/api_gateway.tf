@@ -103,6 +103,27 @@ resource "aws_apigatewayv2_stage" "default" {
   api_id      = aws_apigatewayv2_api.chaos.id
   name        = "$default"
   auto_deploy = true
+
+  # アクセスログ (ADR 015)
+  access_log_settings {
+    destination_arn = aws_cloudwatch_log_group.api_gateway.arn
+    format = jsonencode({
+      requestId      = "$context.requestId"
+      ip             = "$context.identity.sourceIp"
+      requestTime    = "$context.requestTime"
+      httpMethod     = "$context.httpMethod"
+      routeKey       = "$context.routeKey"
+      status         = "$context.status"
+      responseLength = "$context.responseLength"
+      userAgent      = "$context.identity.userAgent"
+    })
+  }
+
+  # スロットリング (ADR 015)
+  default_route_settings {
+    throttling_rate_limit  = 100
+    throttling_burst_limit = 200
+  }
 }
 
 resource "aws_apigatewayv2_integration" "api_handler" {
@@ -110,30 +131,35 @@ resource "aws_apigatewayv2_integration" "api_handler" {
   integration_type       = "AWS_PROXY"
   integration_uri        = aws_lambda_function.api_handler.invoke_arn
   payload_format_version = "2.0"
+  timeout_milliseconds   = 29000
 }
 
 resource "aws_apigatewayv2_route" "post_experiments" {
-  api_id    = aws_apigatewayv2_api.chaos.id
-  route_key = "POST /experiments"
-  target    = "integrations/${aws_apigatewayv2_integration.api_handler.id}"
+  api_id             = aws_apigatewayv2_api.chaos.id
+  route_key          = "POST /experiments"
+  target             = "integrations/${aws_apigatewayv2_integration.api_handler.id}"
+  authorization_type = "AWS_IAM"
 }
 
 resource "aws_apigatewayv2_route" "delete_experiment" {
-  api_id    = aws_apigatewayv2_api.chaos.id
-  route_key = "DELETE /experiments/{id}"
-  target    = "integrations/${aws_apigatewayv2_integration.api_handler.id}"
+  api_id             = aws_apigatewayv2_api.chaos.id
+  route_key          = "DELETE /experiments/{id}"
+  target             = "integrations/${aws_apigatewayv2_integration.api_handler.id}"
+  authorization_type = "AWS_IAM"
 }
 
 resource "aws_apigatewayv2_route" "get_experiments" {
-  api_id    = aws_apigatewayv2_api.chaos.id
-  route_key = "GET /experiments"
-  target    = "integrations/${aws_apigatewayv2_integration.api_handler.id}"
+  api_id             = aws_apigatewayv2_api.chaos.id
+  route_key          = "GET /experiments"
+  target             = "integrations/${aws_apigatewayv2_integration.api_handler.id}"
+  authorization_type = "AWS_IAM"
 }
 
 resource "aws_apigatewayv2_route" "get_experiment" {
-  api_id    = aws_apigatewayv2_api.chaos.id
-  route_key = "GET /experiments/{id}"
-  target    = "integrations/${aws_apigatewayv2_integration.api_handler.id}"
+  api_id             = aws_apigatewayv2_api.chaos.id
+  route_key          = "GET /experiments/{id}"
+  target             = "integrations/${aws_apigatewayv2_integration.api_handler.id}"
+  authorization_type = "AWS_IAM"
 }
 
 resource "aws_lambda_permission" "api_gateway" {

@@ -34,6 +34,13 @@ resource "aws_cloudwatch_log_group" "lambda_api_handler" {
   tags              = local.common_tags
 }
 
+# API Gateway アクセスログ (ADR 015)
+resource "aws_cloudwatch_log_group" "api_gateway" {
+  name              = "/aws/apigateway/${var.project_name}"
+  retention_in_days = 30
+  tags              = local.common_tags
+}
+
 # ---------------------------------------------------------------------------
 # CloudWatch Alarms (ADR 012: CloudWatch Alarm 設計)
 # ALB メトリクスは ALB が作成された後に有効になる (var.alb_arn_suffix が必要)
