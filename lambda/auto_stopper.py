@@ -44,10 +44,11 @@ def get_slo(service: str) -> dict:
 
 def get_running_experiments(service: str) -> list:
     table = dynamodb.Table(EXPERIMENT_TABLE)
-    resp = table.scan(
-        FilterExpression="target_service = :s AND #st = :running",
+    resp = table.query(
+        IndexName="status-target-service-index",
+        KeyConditionExpression="#st = :running AND target_service = :s",
         ExpressionAttributeNames={"#st": "status"},
-        ExpressionAttributeValues={":s": service, ":running": "running"},
+        ExpressionAttributeValues={":running": "running", ":s": service},
     )
     return resp.get("Items", [])
 
