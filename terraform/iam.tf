@@ -1,4 +1,108 @@
 # ---------------------------------------------------------------------------
+# GitHub Actions OIDC — CI/CD デプロイロール
+# ---------------------------------------------------------------------------
+
+resource "aws_iam_openid_connect_provider" "github_actions" {
+  url            = "https://token.actions.githubusercontent.com"
+  client_id_list = ["sts.amazonaws.com"]
+  thumbprint_list = [
+    "6938fd4d98bab03faadb97b34396831e3780aea1",
+    "1c58a3a8518e8759bf075b76b750d4f2df264fcd",
+  ]
+
+  tags = local.common_tags
+}
+
+resource "aws_iam_role" "github_actions" {
+  name = "${var.project_name}-github-actions"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Federated = aws_iam_openid_connect_provider.github_actions.arn }
+      Action    = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = {
+          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+        }
+        StringLike = {
+          "token.actions.githubusercontent.com:sub" = "repo:${var.github_repo}:*"
+        }
+      }
+    }]
+  })
+
+  tags = local.common_tags
+}
+
+resource "aws_iam_policy" "github_actions" {
+  name = "${var.project_name}-github-actions-policy"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "ECRAuth"
+        Effect   = "Allow"
+        Action   = ["ecr:GetAuthorizationToken"]
+        Resource = "*"
+      },
+      {
+        Sid    = "ECRPush"
+        Effect = "Allow"
+        Action = [
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:BatchGetImage",
+          "ecr:InitiateLayerUpload",
+          "ecr:UploadLayerPart",
+          "ecr:CompleteLayerUpload",
+          "ecr:PutImage",
+        ]
+        Resource = [
+          aws_ecr_repository.service_a.arn,
+          aws_ecr_repository.service_b.arn,
+          aws_ecr_repository.chaos_agent.arn,
+        ]
+      },
+      {
+        Sid      = "EKSDescribe"
+        Effect   = "Allow"
+        Action   = ["eks:DescribeCluster"]
+        Resource = "arn:aws:eks:${var.aws_region}:${data.aws_caller_identity.current.account_id}:cluster/${module.eks.cluster_name}"
+      },
+      {
+        Sid    = "FrontendS3"
+        Effect = "Allow"
+        Action = [
+          "s3:PutObject",
+          "s3:DeleteObject",
+          "s3:ListBucket",
+        ]
+        Resource = [
+          aws_s3_bucket.frontend.arn,
+          "${aws_s3_bucket.frontend.arn}/*",
+        ]
+      },
+      {
+        Sid      = "FrontendCFInvalidation"
+        Effect   = "Allow"
+        Action   = ["cloudfront:CreateInvalidation"]
+        Resource = aws_cloudfront_distribution.frontend.arn
+      },
+    ]
+  })
+
+  tags = local.common_tags
+}
+
+resource "aws_iam_role_policy_attachment" "github_actions" {
+  role       = aws_iam_role.github_actions.name
+  policy_arn = aws_iam_policy.github_actions.arn
+}
+
+# ---------------------------------------------------------------------------
 # chaos-agent IRSA (ADR 011 item 4, docs/iam-design.md §2)
 # ---------------------------------------------------------------------------
 

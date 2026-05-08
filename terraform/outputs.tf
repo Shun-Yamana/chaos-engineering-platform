@@ -43,3 +43,8 @@ output "api_endpoint" {
   description = "Chaos Platform API endpoint"
   value       = aws_apigatewayv2_stage.default.invoke_url
 }
+
+output "ecr_chaos_agent_url" {
+  description = "ECR repository URL for chaos-agent"
+  value       = aws_ecr_repository.chaos_agent.repository_url
+}

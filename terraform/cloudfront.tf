@@ -9,6 +9,34 @@
 # 2nd apply: alb_dns_name を指定して CloudFront を作成
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# 共有セキュリティヘッダーポリシー — frontend + service-b 両 distribution で使用 (ADR 017)
+# ---------------------------------------------------------------------------
+
+resource "aws_cloudfront_response_headers_policy" "security_headers" {
+  name = "${var.project_name}-security-headers"
+
+  security_headers_config {
+    strict_transport_security {
+      access_control_max_age_sec = 31536000
+      include_subdomains         = true
+      preload                    = true
+      override                   = true
+    }
+    content_type_options {
+      override = true
+    }
+    frame_options {
+      frame_option = "DENY"
+      override     = true
+    }
+    referrer_policy {
+      referrer_policy = "strict-origin-when-cross-origin"
+      override        = true
+    }
+  }
+}
+
 variable "alb_dns_name" {
   description = "ALB DNS name created by AWS Load Balancer Controller (set after kubectl apply -f k8s/ingress.yaml)"
   type        = string
@@ -29,6 +57,8 @@ resource "aws_cloudfront_distribution" "service_b" {
 
   enabled         = true
   is_ipv6_enabled = true
+  http_version    = "http2and3"
+  price_class     = "PriceClass_200"
   comment         = "${var.project_name} service-b"
 
   origin {
@@ -40,6 +70,7 @@ resource "aws_cloudfront_distribution" "service_b" {
       https_port             = 443
       origin_protocol_policy = "http-only"
       origin_ssl_protocols   = ["TLSv1.2"]
+      origin_read_timeout    = 30
     }
 
     # CloudFront → ALB 認証用カスタムヘッダー (ADR 012)
@@ -53,9 +84,11 @@ resource "aws_cloudfront_distribution" "service_b" {
     allowed_methods        = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
     cached_methods         = ["GET", "HEAD"]
     target_origin_id       = "alb-service-b"
-    viewer_protocol_policy = "redirect-to-https"
-    cache_policy_id        = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" # CachingDisabled
-    origin_request_policy_id = "216adef6-5c7f-47e4-b989-5492eafa07d3" # AllViewer
+    viewer_protocol_policy     = "redirect-to-https"
+    compress                   = true
+    cache_policy_id            = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" # CachingDisabled
+    origin_request_policy_id   = "216adef6-5c7f-47e4-b989-5492eafa07d3" # AllViewer
+    response_headers_policy_id = aws_cloudfront_response_headers_policy.security_headers.id
   }
 
   restrictions {
