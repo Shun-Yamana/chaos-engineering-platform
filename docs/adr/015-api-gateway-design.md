@@ -1,7 +1,8 @@
 # ADR 015 - API Gateway HTTP API 設計
 
-- Status: Accepted
+- Status: Amended by ADR 018
 - Date: 2026-05-06
+- Note: 認証方式を AWS_IAM → Cognito JWT に変更。CORS を追加。詳細は ADR 018 を参照。
 
 ## Context
 

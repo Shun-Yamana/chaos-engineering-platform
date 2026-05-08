@@ -96,7 +96,28 @@ resource "aws_apigatewayv2_api" "chaos" {
   name          = "${var.project_name}-api"
   protocol_type = "HTTP"
 
+  # CORS (ADR 018: フロントエンドからのブラウザリクエストに必要)
+  cors_configuration {
+    allow_origins = [var.frontend_url]
+    allow_methods = ["GET", "POST", "DELETE", "OPTIONS"]
+    allow_headers = ["Content-Type", "Authorization"]
+    max_age       = 3600
+  }
+
   tags = local.common_tags
+}
+
+# JWT Authorizer — Cognito User Pool (ADR 018)
+resource "aws_apigatewayv2_authorizer" "cognito" {
+  api_id           = aws_apigatewayv2_api.chaos.id
+  authorizer_type  = "JWT"
+  identity_sources = ["$request.header.Authorization"]
+  name             = "cognito-jwt"
+
+  jwt_configuration {
+    audience = [aws_cognito_user_pool_client.this.id]
+    issuer   = "https://cognito-idp.${var.aws_region}.amazonaws.com/${aws_cognito_user_pool.this.id}"
+  }
 }
 
 resource "aws_apigatewayv2_stage" "default" {
@@ -138,28 +159,32 @@ resource "aws_apigatewayv2_route" "post_experiments" {
   api_id             = aws_apigatewayv2_api.chaos.id
   route_key          = "POST /experiments"
   target             = "integrations/${aws_apigatewayv2_integration.api_handler.id}"
-  authorization_type = "AWS_IAM"
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito.id
 }
 
 resource "aws_apigatewayv2_route" "delete_experiment" {
   api_id             = aws_apigatewayv2_api.chaos.id
   route_key          = "DELETE /experiments/{id}"
   target             = "integrations/${aws_apigatewayv2_integration.api_handler.id}"
-  authorization_type = "AWS_IAM"
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito.id
 }
 
 resource "aws_apigatewayv2_route" "get_experiments" {
   api_id             = aws_apigatewayv2_api.chaos.id
   route_key          = "GET /experiments"
   target             = "integrations/${aws_apigatewayv2_integration.api_handler.id}"
-  authorization_type = "AWS_IAM"
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito.id
 }
 
 resource "aws_apigatewayv2_route" "get_experiment" {
   api_id             = aws_apigatewayv2_api.chaos.id
   route_key          = "GET /experiments/{id}"
   target             = "integrations/${aws_apigatewayv2_integration.api_handler.id}"
-  authorization_type = "AWS_IAM"
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito.id
 }
 
 resource "aws_lambda_permission" "api_gateway" {

@@ -52,8 +52,8 @@ variable "eks_public_access_cidrs" {
   default     = ["0.0.0.0/0"]
 }
 
-variable "github_actions_role_arn" {
-  description = "IAM role ARN for GitHub Actions OIDC. Used for EKS access entry (kubectl deploy)."
+variable "github_repo" {
+  description = "GitHub repository in owner/repo format. Used to scope the OIDC trust policy (e.g. 'yamas/chaos-platform')."
   type        = string
 }
 
@@ -67,4 +67,16 @@ variable "alb_arn_suffix" {
   description = "ALB ARN suffix for CloudWatch Alarm dimensions (e.g. app/k8s-default-serviceb-xxx/xxx). Set after kubectl apply -f k8s/ingress.yaml."
   type        = string
   default     = ""
+}
+
+variable "frontend_url" {
+  description = "CloudFront frontend URL for Cognito callback and CORS (e.g. https://xxx.cloudfront.net). Set after frontend distribution is created."
+  type        = string
+  default     = "https://localhost:5173"
+}
+
+variable "cognito_test_user_password" {
+  description = "Password for the demo Cognito user. Must satisfy the password policy (min 12, upper/lower/number/symbol)."
+  type        = string
+  sensitive   = true
 }

@@ -17,8 +17,14 @@ kubernetes_version = "1.32"
 # https://api.github.com/meta の "actions" で取得できる
 eks_public_access_cidrs = ["0.0.0.0/0"]
 
-# GitHub Actions OIDC ロール ARN (terraform/iam.tf またはコンソールで作成)
-github_actions_role_arn = "arn:aws:iam::123456789012:role/github-actions-role"
+# GitHub Actions OIDC — owner/repo 形式で指定 (iam.tf でロールを自動作成)
+github_repo = "owner/chaos-platform"
 
 # Slack Incoming Webhook URL (sensitive — .gitignore で除外必須)
 slack_webhook_url = "https://hooks.slack.com/services/XXXXX/YYYYY/ZZZZZ"
+
+# CloudFront フロントエンド URL（frontend distribution 作成後に設定）
+frontend_url = "https://xxx.cloudfront.net"
+
+# Cognito デモユーザーのパスワード (sensitive — .gitignore で除外必須)
+cognito_test_user_password = "Change@Me1234!"
