@@ -226,10 +226,43 @@ resource "aws_iam_policy" "fis_execution" {
         }
       },
       {
-        Sid      = "CloudWatchLogs"
+        # log_configuration 用: アカウントレベルの Delivery API はリソース指定不可
+        Sid    = "CloudWatchLogsDelivery"
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogDelivery",
+          "logs:GetLogDelivery",
+          "logs:UpdateLogDelivery",
+          "logs:DeleteLogDelivery",
+          "logs:ListLogDeliveries",
+          "logs:PutResourcePolicy",
+          "logs:DescribeResourcePolicies",
+          "logs:DescribeLogGroups",
+        ]
+        Resource = "*"
+      },
+      {
+        Sid      = "CloudWatchLogsPut"
         Effect   = "Allow"
-        Action   = ["logs:CreateLogDelivery", "logs:PutLogEvents"]
-        Resource = "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/fis/chaos-*"
+        Action   = ["logs:PutLogEvents", "logs:CreateLogStream"]
+        Resource = "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/fis/${var.project_name}:*"
+      },
+      {
+        # experiment_report_configuration のデータソース読み取り
+        Sid      = "CloudWatchDashboard"
+        Effect   = "Allow"
+        Action   = ["cloudwatch:GetDashboard"]
+        Resource = aws_cloudwatch_dashboard.chaos_experiment.dashboard_arn
+      },
+      {
+        # experiment_report_configuration の S3 出力
+        Sid    = "FISReportsS3"
+        Effect = "Allow"
+        Action = ["s3:PutObject", "s3:GetBucketLocation"]
+        Resource = [
+          aws_s3_bucket.fis_reports.arn,
+          "${aws_s3_bucket.fis_reports.arn}/*",
+        ]
       },
     ]
   })

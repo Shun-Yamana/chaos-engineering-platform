@@ -42,6 +42,62 @@ resource "aws_cloudwatch_log_group" "api_gateway" {
 }
 
 # ---------------------------------------------------------------------------
+# CloudWatch ダッシュボード — FIS 実験レポートのデータソース (ADR 022)
+# experiment_report_configuration.data_sources から参照される
+# ---------------------------------------------------------------------------
+
+resource "aws_cloudwatch_dashboard" "chaos_experiment" {
+  dashboard_name = "${var.project_name}-experiment"
+
+  dashboard_body = jsonencode({
+    widgets = [
+      {
+        type   = "metric"
+        x      = 0
+        y      = 0
+        width  = 12
+        height = 6
+        properties = {
+          title   = "service-b 5xx Error Count"
+          view    = "timeSeries"
+          region  = var.aws_region
+          metrics = [["AWS/ApplicationELB", "HTTPCode_Target_5XX_Count", "LoadBalancer", var.alb_arn_suffix, { stat = "Sum", period = 60 }]]
+          yAxis   = { left = { min = 0 } }
+        }
+      },
+      {
+        type   = "metric"
+        x      = 12
+        y      = 0
+        width  = 12
+        height = 6
+        properties = {
+          title   = "service-b P95 Latency (s)"
+          view    = "timeSeries"
+          region  = var.aws_region
+          metrics = [["AWS/ApplicationELB", "TargetResponseTime", "LoadBalancer", var.alb_arn_suffix, { stat = "p95", period = 60 }]]
+          yAxis   = { left = { min = 0 } }
+        }
+      },
+      {
+        type   = "metric"
+        x      = 0
+        y      = 6
+        width  = 12
+        height = 6
+        properties = {
+          title   = "Healthy Hosts"
+          view    = "timeSeries"
+          region  = var.aws_region
+          metrics = [["AWS/ApplicationELB", "HealthyHostCount", "LoadBalancer", var.alb_arn_suffix, { stat = "Average", period = 60 }]]
+          yAxis   = { left = { min = 0 } }
+        }
+      },
+    ]
+  })
+}
+
+# ---------------------------------------------------------------------------
 # CloudWatch Alarms (ADR 012: CloudWatch Alarm 設計)
 # ALB メトリクスは ALB が作成された後に有効になる (var.alb_arn_suffix が必要)
 # ---------------------------------------------------------------------------
@@ -135,9 +191,9 @@ resource "aws_cloudwatch_metric_alarm" "chaos_agent_pod_down" {
   period      = 60
   statistic   = "Average"
   dimensions = {
-    ClusterName  = module.eks.cluster_name
-    Namespace    = "chaos"
-    PodName      = "chaos-agent"
+    ClusterName = module.eks.cluster_name
+    Namespace   = "chaos"
+    PodName     = "chaos-agent"
   }
 
   alarm_actions = [aws_sns_topic.chaos_alerts.arn]
