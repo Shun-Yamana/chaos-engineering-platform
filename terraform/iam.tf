@@ -138,24 +138,24 @@ resource "aws_iam_policy" "chaos_agent" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "DynamoDB"
-        Effect = "Allow"
-        Action = ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:UpdateItem"]
+        Sid      = "DynamoDB"
+        Effect   = "Allow"
+        Action   = ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:UpdateItem"]
         Resource = "arn:aws:dynamodb:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/chaos-*"
       },
       {
-        Sid    = "FISStart"
-        Effect = "Allow"
-        Action = ["fis:StartExperiment"]
+        Sid      = "FISStart"
+        Effect   = "Allow"
+        Action   = ["fis:StartExperiment"]
         Resource = "arn:aws:fis:${var.aws_region}:${data.aws_caller_identity.current.account_id}:experiment-template/*"
         Condition = {
           StringEquals = { "aws:ResourceTag/Project" = "chaos-platform" }
         }
       },
       {
-        Sid    = "FISManage"
-        Effect = "Allow"
-        Action = ["fis:StopExperiment", "fis:GetExperiment"]
+        Sid      = "FISManage"
+        Effect   = "Allow"
+        Action   = ["fis:StopExperiment", "fis:GetExperiment"]
         Resource = "arn:aws:fis:${var.aws_region}:${data.aws_caller_identity.current.account_id}:experiment/*"
       },
       {
@@ -215,9 +215,9 @@ resource "aws_iam_policy" "fis_execution" {
         Resource = "*"
       },
       {
-        Sid    = "EC2Modify"
-        Effect = "Allow"
-        Action = ["ec2:ModifyNetworkInterfaceAttribute"]
+        Sid      = "EC2Modify"
+        Effect   = "Allow"
+        Action   = ["ec2:ModifyNetworkInterfaceAttribute"]
         Resource = "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:network-interface/*"
         Condition = {
           StringEquals = {
@@ -226,9 +226,9 @@ resource "aws_iam_policy" "fis_execution" {
         }
       },
       {
-        Sid    = "CloudWatchLogs"
-        Effect = "Allow"
-        Action = ["logs:CreateLogDelivery", "logs:PutLogEvents"]
+        Sid      = "CloudWatchLogs"
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogDelivery", "logs:PutLogEvents"]
         Resource = "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/fis/chaos-*"
       },
     ]
@@ -273,4 +273,44 @@ resource "aws_iam_role" "cloudwatch_agent" {
 resource "aws_iam_role_policy_attachment" "cloudwatch_agent" {
   role       = aws_iam_role.cloudwatch_agent.name
   policy_arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
+}
+
+# ---------------------------------------------------------------------------
+# SNS 配信フィードバックログ用 IAM ロール
+# Lambda・HTTPS(Slack) 両サブスクリプションの配信失敗を CloudWatch Logs に記録
+# ---------------------------------------------------------------------------
+
+resource "aws_iam_role" "sns_feedback" {
+  name = "${var.project_name}-sns-feedback"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "sns.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+
+  tags = local.common_tags
+}
+
+resource "aws_iam_role_policy" "sns_feedback_logs" {
+  name = "cloudwatch-logs"
+  role = aws_iam_role.sns_feedback.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+        "logs:DescribeLogGroups",
+        "logs:DescribeLogStreams",
+      ]
+      Resource = "*"
+    }]
+  })
 }
