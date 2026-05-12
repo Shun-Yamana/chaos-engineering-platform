@@ -87,12 +87,12 @@ resource "aws_fis_experiment_template" "network_latency" {
 
     parameter {
       key   = "duration"
-      value = "{{ duration }}"
+      value = "PT300S"
     }
 
     parameter {
       key   = "delayMilliseconds"
-      value = "{{ delayMilliseconds }}"
+      value = "500"
     }
 
     target {
@@ -130,18 +130,6 @@ resource "aws_fis_experiment_template" "network_latency" {
 
     pre_experiment_duration  = "PT5M"
     post_experiment_duration = "PT5M"
-  }
-
-  parameter {
-    key         = "duration"
-    description = "Duration of the experiment (ISO 8601, e.g. PT300S)"
-    required    = true
-  }
-
-  parameter {
-    key         = "delayMilliseconds"
-    description = "Network latency to inject in milliseconds"
-    required    = true
   }
 
   tags = merge(local.common_tags, {

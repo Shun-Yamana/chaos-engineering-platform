@@ -50,8 +50,9 @@ class ChaosAgent:
 
         self.core_v1 = client.CoreV1Api()
         self.apps_v1 = client.AppsV1Api()
-        self._stress_targets: dict[str, str] = {}   # experiment_id -> pod_name
-        self._fis_experiments: dict[str, str] = {}  # experiment_id -> FIS experiment id
+        self._stress_targets: dict[str, str] = {}        # experiment_id -> pod_name
+        self._fis_experiments: dict[str, str] = {}       # experiment_id -> FIS experiment id
+        self._temp_fis_templates: dict[str, str] = {}    # experiment_id -> temp template id
         self._fis = boto3.client("fis")
 
     def _get_pods(self, namespace: str, service: str) -> list:
@@ -234,38 +235,80 @@ class ChaosAgent:
         # FIS テンプレート ID は Terraform output から環境変数で渡す
         # 例: FIS_TEMPLATE_SERVICE_A, FIS_TEMPLATE_SERVICE_B
         env_key = f"FIS_TEMPLATE_{experiment.service.upper().replace('-', '_')}"
-        template_id = os.environ.get(env_key)
-        if not template_id:
-            raise RuntimeError(
-                f"FIS template ID not set: env var {env_key} is missing"
-            )
+        base_id = os.environ.get(env_key)
+        if not base_id:
+            raise RuntimeError(f"FIS template ID not set: env var {env_key} is missing")
 
-        response = self._fis.start_experiment(
-            experimentTemplateId=template_id,
-            experimentTemplateParameters={
-                "duration": f"PT{experiment.duration_seconds}S",
-                "delayMilliseconds": str(experiment.latency_ms),
-            },
-            tags={"Project": "chaos-platform", "ExperimentId": experiment.experiment_id},
+        # Terraform AWS provider が experiment template parameters を未サポートのため、
+        # GUI 値 (duration / latency_ms) を直接埋め込んだ一時テンプレートを生成して使う。
+        base = self._fis.get_experiment_template(id=base_id)["experimentTemplate"]
+
+        patched_actions = {}
+        for name, action in base["actions"].items():
+            patched = {
+                "actionId": action["actionId"],
+                "parameters": {
+                    **action.get("parameters", {}),
+                    "duration": f"PT{experiment.duration_seconds}S",
+                    "delayMilliseconds": str(experiment.latency_ms),
+                },
+                "targets": action.get("targets", {}),
+            }
+            if "description" in action:
+                patched["description"] = action["description"]
+            if "startAfter" in action:
+                patched["startAfter"] = action["startAfter"]
+            patched_actions[name] = patched
+
+        create_kwargs: dict = dict(
+            description=f"chaos-platform/{experiment.service}/{experiment.experiment_id}",
+            stopConditions=base["stopConditions"],
+            targets=base["targets"],
+            actions=patched_actions,
+            roleArn=base["roleArn"],
+            tags={"Project": "chaos-platform", "Temporary": "true"},
         )
-        fis_id = response["experiment"]["id"]
+        if "logConfiguration" in base:
+            create_kwargs["logConfiguration"] = base["logConfiguration"]
+        if base.get("experimentOptions", {}).get("emptyTargetResolutionMode"):
+            create_kwargs["experimentOptions"] = {
+                "emptyTargetResolutionMode": base["experimentOptions"]["emptyTargetResolutionMode"],
+            }
+
+        temp_id = self._fis.create_experiment_template(**create_kwargs)["experimentTemplate"]["id"]
+        self._temp_fis_templates[experiment.experiment_id] = temp_id
+
+        fis_id = self._fis.start_experiment(
+            experimentTemplateId=temp_id,
+            tags={"Project": "chaos-platform", "ExperimentId": experiment.experiment_id},
+        )["experiment"]["id"]
         self._fis_experiments[experiment.experiment_id] = fis_id
         logger.info(
             f"[{experiment.experiment_id}] FIS experiment started: {fis_id} "
+            f"(template={temp_id}) "
             f"latency={experiment.latency_ms}ms duration={experiment.duration_seconds}s"
         )
 
     def network_latency_remove(self, experiment: Experiment):
         fis_id = self._fis_experiments.pop(experiment.experiment_id, None)
-        if not fis_id:
+        temp_id = self._temp_fis_templates.pop(experiment.experiment_id, None)
+
+        if fis_id:
+            try:
+                self._fis.stop_experiment(id=fis_id)
+                logger.info(f"[{experiment.experiment_id}] FIS experiment stopped: {fis_id}")
+            except self._fis.exceptions.ConflictException:
+                # 実験が duration で自然終了している場合は ConflictException になる
+                logger.info(f"[{experiment.experiment_id}] FIS experiment already completed: {fis_id}")
+        else:
             logger.warning(f"[{experiment.experiment_id}] no FIS experiment ID found, skipping stop")
-            return
-        try:
-            self._fis.stop_experiment(id=fis_id)
-            logger.info(f"[{experiment.experiment_id}] FIS experiment stopped: {fis_id}")
-        except self._fis.exceptions.ConflictException:
-            # 実験が duration で自然終了している場合は ConflictException になる
-            logger.info(f"[{experiment.experiment_id}] FIS experiment already completed: {fis_id}")
+
+        if temp_id:
+            try:
+                self._fis.delete_experiment_template(id=temp_id)
+                logger.info(f"[{experiment.experiment_id}] temp FIS template deleted: {temp_id}")
+            except Exception as e:
+                logger.warning(f"[{experiment.experiment_id}] failed to delete temp template {temp_id}: {e}")
 
     # --- run / stop ---
 
