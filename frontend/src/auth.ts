@@ -72,7 +72,7 @@ export async function handleCallback(code: string): Promise<void> {
 
 export function getToken(): string | null {
   if (DEV_AUTH) return "dev-token"
-  return sessionStorage.getItem("access_token")
+  return sessionStorage.getItem("id_token")
 }
 
 export function isAuthenticated(): boolean {
