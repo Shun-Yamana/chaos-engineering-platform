@@ -1,14 +1,24 @@
-const colors: Record<string, string> = {
-  running:   "bg-yellow-100 text-yellow-800",
-  completed: "bg-green-100 text-green-800",
-  stopped:   "bg-blue-100 text-blue-800",
-  failed:    "bg-red-100 text-red-800",
-  pending:   "bg-gray-100 text-gray-600",
+const config: Record<string, { bg: string; text: string; dot: string; pulse: boolean }> = {
+  running:   { bg: "bg-amber-50",  text: "text-amber-700",  dot: "bg-amber-500",  pulse: true },
+  pending:   { bg: "bg-slate-100", text: "text-slate-500",  dot: "bg-slate-400",  pulse: true },
+  completed: { bg: "bg-green-50",  text: "text-green-700",  dot: "bg-green-500",  pulse: false },
+  stopped:   { bg: "bg-sky-50",    text: "text-sky-700",    dot: "bg-sky-400",    pulse: false },
+  failed:    { bg: "bg-red-50",    text: "text-red-700",    dot: "bg-red-500",    pulse: false },
 }
 
-export function StatusBadge({ status }: { status: string }) {
+interface Props {
+  status: string
+  size?: "sm" | "md"
+}
+
+export function StatusBadge({ status, size = "sm" }: Props) {
+  const c = config[status] ?? config.pending
+  const cls = size === "md"
+    ? "text-sm px-2.5 py-1 gap-1.5"
+    : "text-xs px-2 py-0.5 gap-1"
   return (
-    <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${colors[status] ?? colors.pending}`}>
+    <span className={`inline-flex items-center rounded-full font-medium ${c.bg} ${c.text} ${cls}`}>
+      <span className={`rounded-full shrink-0 ${c.dot} ${c.pulse ? "animate-pulse" : ""} ${size === "md" ? "w-2 h-2" : "w-1.5 h-1.5"}`} />
       {status}
     </span>
   )
