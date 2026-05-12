@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { api, type Experiment } from "../api"
 import { StatusBadge } from "./StatusBadge"
 
@@ -14,11 +14,31 @@ export function ExperimentDetail({ experimentId, onBack, onStopped }: Props) {
   const [stopping, setStopping] = useState(false)
   const [error, setError] = useState("")
 
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
   useEffect(() => {
-    api.getExperiment(experimentId)
-      .then(setExp)
-      .catch(e => setError(e.message))
-      .finally(() => setLoading(false))
+    let cancelled = false
+
+    const fetchData = () => {
+      api.getExperiment(experimentId)
+        .then(data => {
+          if (cancelled) return
+          setExp(data)
+          if (data.status !== "running" && data.status !== "pending") {
+            if (intervalRef.current) clearInterval(intervalRef.current)
+          }
+        })
+        .catch(e => { if (!cancelled) setError(e.message) })
+        .finally(() => { if (!cancelled) setLoading(false) })
+    }
+
+    fetchData()
+    intervalRef.current = setInterval(fetchData, 10_000)
+
+    return () => {
+      cancelled = true
+      if (intervalRef.current) clearInterval(intervalRef.current)
+    }
   }, [experimentId])
 
   const handleStop = async () => {

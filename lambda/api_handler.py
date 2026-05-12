@@ -5,11 +5,15 @@ import boto3
 import logging
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
+from boto3.dynamodb.conditions import Attr
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-dynamodb = boto3.resource("dynamodb")
+dynamodb = boto3.resource(
+    "dynamodb",
+    endpoint_url=os.environ.get("DYNAMODB_ENDPOINT_URL"),
+)
 
 EXPERIMENT_TABLE = os.environ["EXPERIMENT_TABLE"]
 SLO_TABLE = os.environ["SLO_TABLE"]
@@ -66,10 +70,7 @@ def start_experiment(body: dict) -> dict:
 
 def stop_experiment(experiment_id: str, reason: str = "manual") -> dict:
     table = dynamodb.Table(EXPERIMENT_TABLE)
-    resp = table.scan(
-        FilterExpression="experiment_id = :id",
-        ExpressionAttributeValues={":id": experiment_id},
-    )
+    resp = table.scan(FilterExpression=Attr("experiment_id").eq(experiment_id))
     items = resp.get("Items", [])
     if not items:
         return response(404, {"error": "experiment not found"})
@@ -98,10 +99,7 @@ def list_experiments(service: str | None = None, limit: int = 20) -> dict:
     table = dynamodb.Table(EXPERIMENT_TABLE)
 
     if service:
-        resp = table.scan(
-            FilterExpression="target_service = :s",
-            ExpressionAttributeValues={":s": service},
-        )
+        resp = table.scan(FilterExpression=Attr("target_service").eq(service))
     else:
         resp = table.scan()
 
@@ -116,10 +114,7 @@ def list_experiments(service: str | None = None, limit: int = 20) -> dict:
 
 def get_experiment(experiment_id: str) -> dict:
     table = dynamodb.Table(EXPERIMENT_TABLE)
-    resp = table.scan(
-        FilterExpression="experiment_id = :id",
-        ExpressionAttributeValues={":id": experiment_id},
-    )
+    resp = table.scan(FilterExpression=Attr("experiment_id").eq(experiment_id))
     items = resp.get("Items", [])
     if not items:
         return response(404, {"error": "experiment not found"})
@@ -127,8 +122,10 @@ def get_experiment(experiment_id: str) -> dict:
 
 
 def handler(event, context):
-    method = event.get("httpMethod", "")
-    path = event.get("path", "")
+    # API Gateway HTTP API v2 は requestContext.http.method / rawPath を使う (payload_format_version = "2.0")
+    http_ctx = event.get("requestContext", {}).get("http", {})
+    method = http_ctx.get("method") or event.get("httpMethod", "")
+    path = event.get("rawPath") or event.get("path", "")
     body = {}
 
     if event.get("body"):

@@ -1,3 +1,5 @@
+import { getToken } from "./auth"
+
 const BASE = import.meta.env.VITE_API_ENDPOINT ?? ""
 
 export interface Experiment {
@@ -33,9 +35,14 @@ export interface StartPayload {
 }
 
 async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const token = getToken()
+  const headers: Record<string, string> = {}
+  if (body) headers["Content-Type"] = "application/json"
+  if (token) headers["Authorization"] = `Bearer ${token}`
+
   const res = await fetch(`${BASE}${path}`, {
     method,
-    headers: body ? { "Content-Type": "application/json" } : {},
+    headers,
     body: body ? JSON.stringify(body) : undefined,
   })
   if (!res.ok) {

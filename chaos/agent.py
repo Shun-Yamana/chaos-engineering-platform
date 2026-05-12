@@ -16,7 +16,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-dynamodb = boto3.resource("dynamodb")
+dynamodb = boto3.resource(
+    "dynamodb",
+    endpoint_url=os.environ.get("DYNAMODB_ENDPOINT_URL"),
+)
 
 TABLE_NAME = os.environ.get("TABLE_NAME", "")
 
