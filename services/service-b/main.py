@@ -1,8 +1,8 @@
 import os
+import asyncio
 import logging
 import httpx
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -12,6 +12,13 @@ app = FastAPI(title="service-b")
 SERVICE_A_URL = os.getenv("SERVICE_A_URL", "http://service-a/")
 
 
+def _latency_ms() -> int:
+    try:
+        return int(os.getenv("LATENCY_MS", "0"))
+    except ValueError:
+        return 0
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "service-b"}
@@ -19,6 +26,10 @@ def health():
 
 @app.get("/items/{item_id}")
 async def get_item(item_id: int):
+    ms = _latency_ms()
+    if ms > 0:
+        await asyncio.sleep(ms / 1000)
+
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
             response = await client.get(f"{SERVICE_A_URL}items/{item_id}")

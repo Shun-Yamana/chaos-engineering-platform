@@ -140,7 +140,7 @@ resource "aws_iam_policy" "chaos_agent" {
       {
         Sid      = "DynamoDB"
         Effect   = "Allow"
-        Action   = ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:UpdateItem"]
+        Action   = ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:Scan"]
         Resource = "arn:aws:dynamodb:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/chaos-*"
       },
       {
@@ -156,7 +156,10 @@ resource "aws_iam_policy" "chaos_agent" {
         Sid    = "FISTemplateCreate"
         Effect = "Allow"
         Action = ["fis:CreateExperimentTemplate"]
-        Resource = "arn:aws:fis:${var.aws_region}:${data.aws_caller_identity.current.account_id}:experiment-template/*"
+        Resource = [
+          "arn:aws:fis:${var.aws_region}:${data.aws_caller_identity.current.account_id}:experiment-template/*",
+          "arn:aws:fis:${var.aws_region}:${data.aws_caller_identity.current.account_id}:action/*",
+        ]
         Condition = {
           StringEquals = { "aws:RequestTag/Project" = "chaos-platform" }
         }

@@ -185,7 +185,7 @@ resource "aws_cloudwatch_metric_alarm" "chaos_agent_pod_down" {
   comparison_operator = "LessThanThreshold"
   evaluation_periods  = 2
   threshold           = 1
-  treat_missing_data  = "breaching"
+  treat_missing_data  = "notBreaching"
 
   metric_name = "pod_number_of_running_containers"
   namespace   = "ContainerInsights"

@@ -2,6 +2,8 @@ import os
 import time
 import logging
 import threading
+import urllib.request
+import urllib.error
 import boto3
 from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass
@@ -52,10 +54,6 @@ class ChaosAgent:
         self.core_v1 = client.CoreV1Api()
         self.apps_v1 = client.AppsV1Api()
         self._stress_targets: dict[str, str] = {}        # experiment_id -> pod_name
-        self._fis_experiments: dict[str, str] = {}       # experiment_id -> FIS experiment id
-        self._temp_fis_templates: dict[str, str] = {}    # experiment_id -> temp template id
-        _region = os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION"))
-        self._fis = boto3.client("fis", region_name=_region)
 
     def _get_pods(self, namespace: str, service: str) -> list:
         pods = self.core_v1.list_namespaced_pod(
@@ -230,87 +228,35 @@ class ChaosAgent:
         logger.info(f"[{experiment.experiment_id}] FAULT_RATE removed")
 
     # --- network_latency ---
-    # tc netem には NET_ADMIN が必要だが EKS Fargate は Pod レベルで封じているため
-    # AWS FIS (aws:eks:pod-network-latency) に委譲する (ADR 009, ADR 010)
+    # EKS Fargate は tc netem に必要な NET_ADMIN を禁止しており、
+    # aws:eks:pod-network-latency も Fargate 非対応のため、
+    # Deployment の LATENCY_MS 環境変数でアプリレベル遅延を注入する。
 
     def network_latency_inject(self, experiment: Experiment):
-        # FIS テンプレート ID は Terraform output から環境変数で渡す
-        # 例: FIS_TEMPLATE_SERVICE_A, FIS_TEMPLATE_SERVICE_B
-        env_key = f"FIS_TEMPLATE_{experiment.service.upper().replace('-', '_')}"
-        base_id = os.environ.get(env_key)
-        if not base_id:
-            raise RuntimeError(f"FIS template ID not set: env var {env_key} is missing")
+        deployment = self._get_deployment(experiment.namespace, experiment.service)
 
-        # Terraform AWS provider が experiment template parameters を未サポートのため、
-        # GUI 値 (duration / latency_ms) を直接埋め込んだ一時テンプレートを生成して使う。
-        base = self._fis.get_experiment_template(id=base_id)["experimentTemplate"]
+        for container in deployment.spec.template.spec.containers:
+            if container.name == experiment.service:
+                if container.env is None:
+                    container.env = []
+                container.env = [e for e in container.env if e.name != "LATENCY_MS"]
+                container.env.append(client.V1EnvVar(name="LATENCY_MS", value=str(experiment.latency_ms)))
+                break
 
-        patched_actions = {}
-        for name, action in base["actions"].items():
-            patched = {
-                "actionId": action["actionId"],
-                "parameters": {
-                    **action.get("parameters", {}),
-                    "duration": f"PT{experiment.duration_seconds}S",
-                    "delayMilliseconds": str(experiment.latency_ms),
-                },
-                "targets": action.get("targets", {}),
-            }
-            if "description" in action:
-                patched["description"] = action["description"]
-            if "startAfter" in action:
-                patched["startAfter"] = action["startAfter"]
-            patched_actions[name] = patched
-
-        create_kwargs: dict = dict(
-            description=f"chaos-platform/{experiment.service}/{experiment.experiment_id}",
-            stopConditions=base["stopConditions"],
-            targets=base["targets"],
-            actions=patched_actions,
-            roleArn=base["roleArn"],
-            tags={"Project": "chaos-platform", "Temporary": "true"},
-        )
-        if "logConfiguration" in base:
-            create_kwargs["logConfiguration"] = base["logConfiguration"]
-        if base.get("experimentOptions", {}).get("emptyTargetResolutionMode"):
-            create_kwargs["experimentOptions"] = {
-                "emptyTargetResolutionMode": base["experimentOptions"]["emptyTargetResolutionMode"],
-            }
-
-        temp_id = self._fis.create_experiment_template(**create_kwargs)["experimentTemplate"]["id"]
-        self._temp_fis_templates[experiment.experiment_id] = temp_id
-
-        fis_id = self._fis.start_experiment(
-            experimentTemplateId=temp_id,
-            tags={"Project": "chaos-platform", "ExperimentId": experiment.experiment_id},
-        )["experiment"]["id"]
-        self._fis_experiments[experiment.experiment_id] = fis_id
-        logger.info(
-            f"[{experiment.experiment_id}] FIS experiment started: {fis_id} "
-            f"(template={temp_id}) "
-            f"latency={experiment.latency_ms}ms duration={experiment.duration_seconds}s"
-        )
+        self._patch_deployment(experiment.namespace, experiment.service, deployment)
+        logger.info(f"[{experiment.experiment_id}] LATENCY_MS={experiment.latency_ms} patched")
 
     def network_latency_remove(self, experiment: Experiment):
-        fis_id = self._fis_experiments.pop(experiment.experiment_id, None)
-        temp_id = self._temp_fis_templates.pop(experiment.experiment_id, None)
+        deployment = self._get_deployment(experiment.namespace, experiment.service)
 
-        if fis_id:
-            try:
-                self._fis.stop_experiment(id=fis_id)
-                logger.info(f"[{experiment.experiment_id}] FIS experiment stopped: {fis_id}")
-            except self._fis.exceptions.ConflictException:
-                # 実験が duration で自然終了している場合は ConflictException になる
-                logger.info(f"[{experiment.experiment_id}] FIS experiment already completed: {fis_id}")
-        else:
-            logger.warning(f"[{experiment.experiment_id}] no FIS experiment ID found, skipping stop")
+        for container in deployment.spec.template.spec.containers:
+            if container.name == experiment.service:
+                if container.env:
+                    container.env = [e for e in container.env if e.name != "LATENCY_MS"]
+                break
 
-        if temp_id:
-            try:
-                self._fis.delete_experiment_template(id=temp_id)
-                logger.info(f"[{experiment.experiment_id}] temp FIS template deleted: {temp_id}")
-            except Exception as e:
-                logger.warning(f"[{experiment.experiment_id}] failed to delete temp template {temp_id}: {e}")
+        self._patch_deployment(experiment.namespace, experiment.service, deployment)
+        logger.info(f"[{experiment.experiment_id}] LATENCY_MS removed")
 
     # --- run / stop ---
 
@@ -492,9 +438,50 @@ class ChaosAgentPoller:
             time.sleep(self._poll_interval)
 
 
+# ---------------------------------------------------------------------------
+# バックグラウンド定期トラフィック生成（CloudWatch アラームをデータ不足にさせない）
+# ---------------------------------------------------------------------------
+
+class TrafficGenerator:
+    """SERVICE_B_URL に定期的に GET リクエストを送り ALB メトリクスを維持する。"""
+
+    def __init__(self, url: str, interval: int = 30, origin_secret: str = ""):
+        self._url = url
+        self._interval = interval
+        self._origin_secret = origin_secret
+
+    def _send(self):
+        try:
+            req = urllib.request.Request(self._url)
+            if self._origin_secret:
+                req.add_header("X-Origin-Verify", self._origin_secret)
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                logger.debug(f"[traffic-gen] {self._url} -> {resp.status}")
+        except urllib.error.HTTPError as e:
+            logger.debug(f"[traffic-gen] {self._url} -> {e.code}")
+        except Exception as e:
+            logger.warning(f"[traffic-gen] request failed: {e}")
+
+    def run_forever(self):
+        logger.info(f"traffic-gen started (url={self._url} interval={self._interval}s)")
+        while True:
+            self._send()
+            time.sleep(self._interval)
+
+
 if __name__ == "__main__":
     if not TABLE_NAME:
         raise RuntimeError("TABLE_NAME environment variable is required")
+
+    service_b_url = os.environ.get("SERVICE_B_URL")
+    if service_b_url:
+        traffic_interval = int(os.environ.get("TRAFFIC_GEN_INTERVAL", "30"))
+        origin_secret = os.environ.get("ALB_ORIGIN_SECRET", "")
+        gen = TrafficGenerator(service_b_url, interval=traffic_interval, origin_secret=origin_secret)
+        t = threading.Thread(target=gen.run_forever, daemon=True, name="traffic-gen")
+        t.start()
+    else:
+        logger.info("SERVICE_B_URL not set, traffic generator disabled")
 
     chaos_agent = ChaosAgent()
     poller = ChaosAgentPoller(chaos_agent, TABLE_NAME, poll_interval=10)

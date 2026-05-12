@@ -95,3 +95,23 @@ resource "aws_eks_access_policy_association" "github_actions" {
 
   depends_on = [aws_eks_access_entry.github_actions]
 }
+
+# FIS がターゲット解決（Pod 一覧取得）に使う Kubernetes API 呼び出しを許可
+resource "aws_eks_access_entry" "fis" {
+  cluster_name  = module.eks.cluster_name
+  principal_arn = aws_iam_role.fis_execution.arn
+  type          = "STANDARD"
+  tags          = local.common_tags
+}
+
+resource "aws_eks_access_policy_association" "fis" {
+  cluster_name  = module.eks.cluster_name
+  principal_arn = aws_iam_role.fis_execution.arn
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy"
+
+  access_scope {
+    type = "cluster"
+  }
+
+  depends_on = [aws_eks_access_entry.fis]
+}
