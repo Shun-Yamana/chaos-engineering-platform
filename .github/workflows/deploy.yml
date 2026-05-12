@@ -1,0 +1,164 @@
+name: Deploy Services
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'services/**'
+      - 'chaos/**'
+      - 'k8s/**'
+      - 'frontend/**'
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ap-northeast-1
+  AWS_ACCOUNT_ID: '203553641035'
+  EKS_CLUSTER: chaos-platform-cluster
+
+jobs:
+  build:
+    name: Build & Push ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - service: service-a
+            context: ./services/service-a
+          - service: service-b
+            context: ./services/service-b
+          - service: chaos-agent
+            context: ./chaos
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/chaos-platform-github-actions
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push
+        run: |
+          ECR=${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+          IMAGE=$ECR/chaos-platform/${{ matrix.service }}:${{ github.sha }}
+          docker build -t $IMAGE -t $ECR/chaos-platform/${{ matrix.service }}:latest ${{ matrix.context }}
+          docker push $IMAGE
+          docker push $ECR/chaos-platform/${{ matrix.service }}:latest
+
+  deploy:
+    name: Deploy to EKS
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/chaos-platform-github-actions
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${{ env.AWS_REGION }}
+
+      - name: Apply init manifests
+        run: |
+          kubectl apply -f k8s/namespace.yaml
+          kubectl apply -f k8s/network-policy.yaml
+
+      - name: Apply ingress
+        env:
+          CHAOS_ALB_LOGS_BUCKET: ${{ secrets.ALB_LOGS_BUCKET }}
+          CLOUDFRONT_ORIGIN_SECRET: ${{ secrets.CLOUDFRONT_ORIGIN_SECRET }}
+        run: |
+          sed \
+            -e "s|CHAOS_ALB_LOGS_BUCKET|$CHAOS_ALB_LOGS_BUCKET|g" \
+            -e "s|CLOUDFRONT_ORIGIN_SECRET|$CLOUDFRONT_ORIGIN_SECRET|g" \
+            k8s/ingress.yaml | kubectl apply -f -
+
+      - name: Deploy service-a
+        run: |
+          ECR=${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+          IMAGE=$ECR/chaos-platform/service-a:${{ github.sha }}
+          sed "s|SERVICE_A_IMAGE|$IMAGE|g" k8s/service-a.yaml | kubectl apply -f -
+          kubectl rollout status deployment/service-a -n default --timeout=120s
+
+      - name: Deploy service-b
+        run: |
+          ECR=${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+          IMAGE=$ECR/chaos-platform/service-b:${{ github.sha }}
+          sed "s|SERVICE_B_IMAGE|$IMAGE|g" k8s/service-b.yaml | kubectl apply -f -
+          kubectl rollout status deployment/service-b -n default --timeout=120s
+
+      - name: Apply HPA and PDB
+        run: |
+          kubectl apply -f k8s/hpa.yaml
+          kubectl apply -f k8s/pdb.yaml
+
+      - name: Deploy chaos-agent
+        env:
+          ECR: ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+          CHAOS_AGENT_ROLE_ARN: ${{ secrets.CHAOS_AGENT_ROLE_ARN }}
+          PLACEHOLDER_FIS_TEMPLATE_SERVICE_A: ${{ secrets.FIS_TEMPLATE_SERVICE_A }}
+          PLACEHOLDER_FIS_TEMPLATE_SERVICE_B: ${{ secrets.FIS_TEMPLATE_SERVICE_B }}
+          PLACEHOLDER_TABLE_NAME: ${{ secrets.EXPERIMENT_TABLE_NAME }}
+        run: |
+          CHAOS_AGENT_IMAGE=$ECR/chaos-platform/chaos-agent:${{ github.sha }}
+          sed \
+            -e "s|CHAOS_AGENT_ROLE_ARN|$CHAOS_AGENT_ROLE_ARN|g" \
+            -e "s|CHAOS_AGENT_IMAGE|$CHAOS_AGENT_IMAGE|g" \
+            -e "s|PLACEHOLDER_FIS_TEMPLATE_SERVICE_A|$PLACEHOLDER_FIS_TEMPLATE_SERVICE_A|g" \
+            -e "s|PLACEHOLDER_FIS_TEMPLATE_SERVICE_B|$PLACEHOLDER_FIS_TEMPLATE_SERVICE_B|g" \
+            -e "s|PLACEHOLDER_TABLE_NAME|$PLACEHOLDER_TABLE_NAME|g" \
+            k8s/chaos-agent.yaml | kubectl apply -f -
+          kubectl rollout status deployment/chaos-agent -n chaos --timeout=120s
+
+  deploy-frontend:
+    name: Deploy Frontend
+    runs-on: ubuntu-latest
+    if: contains(github.event.head_commit.modified, 'frontend/') || contains(github.event.head_commit.added, 'frontend/')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/chaos-platform-github-actions
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build
+        working-directory: frontend
+        env:
+          VITE_API_ENDPOINT: ${{ secrets.API_ENDPOINT }}
+          VITE_COGNITO_DOMAIN: ${{ secrets.COGNITO_DOMAIN }}
+          VITE_COGNITO_CLIENT_ID: ${{ secrets.COGNITO_CLIENT_ID }}
+        run: |
+          npm ci
+          npm run build
+
+      - name: Deploy to S3
+        run: |
+          aws s3 sync frontend/dist/ s3://${{ secrets.FRONTEND_BUCKET }}/ --delete
+
+      - name: Invalidate CloudFront cache
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ secrets.FRONTEND_DISTRIBUTION_ID }} \
+            --paths "/*"

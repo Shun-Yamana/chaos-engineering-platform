@@ -1,0 +1,24 @@
+# PodDisruptionBudget — service-a と service-b (ADR 011 item 11)
+# pod_kill 実験中も最低 1 台が稼働し続けることを保証する
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: service-a
+  namespace: default
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: service-a
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: service-b
+  namespace: default
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: service-b

@@ -1,0 +1,18 @@
+# PSS baseline を両 Namespace に適用 (ADR 012)
+# default は既存 Namespace への patch として機能する
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: chaos
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: latest
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: default
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: latest

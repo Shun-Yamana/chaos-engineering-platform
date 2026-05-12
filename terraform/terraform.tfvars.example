@@ -1,0 +1,30 @@
+# terraform.tfvars.example — 実際の値は terraform.tfvars に書いて .gitignore で除外する
+
+aws_region   = "ap-northeast-1"
+project_name = "chaos-platform"
+environment  = "prod"
+
+vpc_cidr           = "10.0.0.0/16"
+availability_zones = ["ap-northeast-1a", "ap-northeast-1c"]
+
+# ADR 011 item 3: Fargate ENI 枯渇対策のため /20 に拡張
+public_subnet_cidrs  = ["10.0.0.0/24", "10.0.1.0/24"]
+private_subnet_cidrs = ["10.0.16.0/20", "10.0.32.0/20"]
+
+kubernetes_version = "1.32"
+
+# ADR 011 item 2: GitHub Actions の IP 帯に絞ることを推奨
+# https://api.github.com/meta の "actions" で取得できる
+eks_public_access_cidrs = ["0.0.0.0/0"]
+
+# GitHub Actions OIDC — owner/repo 形式で指定 (iam.tf でロールを自動作成)
+github_repo = "owner/chaos-platform"
+
+# Slack Incoming Webhook URL (sensitive — .gitignore で除外必須)
+slack_webhook_url = "https://hooks.slack.com/services/XXXXX/YYYYY/ZZZZZ"
+
+# CloudFront フロントエンド URL（frontend distribution 作成後に設定）
+frontend_url = "https://xxx.cloudfront.net"
+
+# Cognito デモユーザーのパスワード (sensitive — .gitignore で除外必須)
+cognito_test_user_password = "Change@Me1234!"

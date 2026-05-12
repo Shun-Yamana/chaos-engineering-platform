@@ -1,0 +1,50 @@
+output "vpc_id" {
+  description = "VPC ID"
+  value       = module.vpc.vpc_id
+}
+
+output "private_subnet_ids" {
+  description = "Private subnet IDs"
+  value       = module.vpc.private_subnet_ids
+}
+
+output "public_subnet_ids" {
+  description = "Public subnet IDs"
+  value       = module.vpc.public_subnet_ids
+}
+
+output "eks_cluster_name" {
+  description = "EKS cluster name"
+  value       = module.eks.cluster_name
+}
+
+output "eks_cluster_endpoint" {
+  description = "EKS cluster endpoint"
+  value       = module.eks.cluster_endpoint
+  sensitive   = true
+}
+
+output "kubeconfig_command" {
+  description = "Command to update kubeconfig"
+  value       = "aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.aws_region}"
+}
+
+output "ecr_service_a_url" {
+  description = "ECR repository URL for service-a"
+  value       = aws_ecr_repository.service_a.repository_url
+}
+
+output "ecr_service_b_url" {
+  description = "ECR repository URL for service-b"
+  value       = aws_ecr_repository.service_b.repository_url
+}
+
+output "api_endpoint" {
+  description = "Chaos Platform API endpoint"
+  value       = aws_apigatewayv2_stage.default.invoke_url
+}
+
+output "ecr_chaos_agent_url" {
+  description = "ECR repository URL for chaos-agent"
+  value       = aws_ecr_repository.chaos_agent.repository_url
+}

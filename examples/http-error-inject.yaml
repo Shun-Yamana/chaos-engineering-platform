@@ -1,0 +1,11 @@
+name: http-error-inject-service-a
+target:
+  namespace: default
+  service: service-a
+fault:
+  type: http_error_inject
+  duration: 60
+  fault_rate: 0.5
+slo:
+  error_rate_threshold: 0.1
+  burn_rate_threshold: 3.0
