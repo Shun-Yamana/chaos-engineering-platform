@@ -3,7 +3,7 @@ const CLIENT_ID = import.meta.env.VITE_COGNITO_CLIENT_ID as string
 const DEV_AUTH = import.meta.env.VITE_DEV_AUTH === "skip"
 
 function redirectUri(): string {
-  return `${window.location.origin}/callback`
+  return window.location.origin
 }
 
 function base64UrlEncode(buf: Uint8Array): string {
