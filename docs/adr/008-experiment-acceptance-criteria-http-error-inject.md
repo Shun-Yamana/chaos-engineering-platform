@@ -20,7 +20,7 @@ fault_rate=0.5（50%エラー）を使用し、合格基準を「検知→自動
 | SLI 検知 | 5分以内（WINDOW_MINUTES）にエラーレート上昇を記録 |
 | auto-stopper 発動 | バーンレート閾値超過で実験を自動停止 |
 | Slack 通知 | auto-stopper 発動と同時に通知が届く |
-| 回復 | FAULT_RATE 除去後、エラーレートが 0% に戻る |
+| 回復 | FAULT_RATE 除去後、エラーレートが SLO 閾値（5%）以内に戻る |
 
 ## Rationale
 

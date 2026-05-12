@@ -8,6 +8,24 @@ interface Props {
   onStopped: () => void
 }
 
+type Outcome = "passed" | "breached" | "manual" | "failed" | "inconclusive"
+
+const OUTCOME: Record<Outcome, { label: string; bg: string; text: string; icon: string; desc: string }> = {
+  passed:      { label: "PASSED",    bg: "bg-green-50",  text: "text-green-700",  icon: "✓", desc: "SLO 閾値内で実験完走" },
+  breached:    { label: "BREACHED",  bg: "bg-red-50",    text: "text-red-700",    icon: "✕", desc: "SLO 違反を検知・自動停止" },
+  manual:      { label: "STOPPED",   bg: "bg-slate-50",  text: "text-slate-600",  icon: "■", desc: "手動停止" },
+  failed:      { label: "FAILED",    bg: "bg-red-50",    text: "text-red-700",    icon: "✕", desc: "実験エラー" },
+  inconclusive:{ label: "RUNNING…",  bg: "bg-amber-50",  text: "text-amber-700",  icon: "⟳", desc: "実行中" },
+}
+
+function getOutcome(exp: { status: string; stop_reason?: string }): Outcome {
+  if (exp.status === "running" || exp.status === "pending") return "inconclusive"
+  if (exp.status === "completed") return "passed"
+  if (exp.status === "failed")    return "failed"
+  if (exp.stop_reason && exp.stop_reason !== "manual") return "breached"
+  return "manual"
+}
+
 const FAULT_COLORS: Record<string, string> = {
   pod_kill:          "bg-red-100 text-red-700",
   cpu_stress:        "bg-orange-100 text-orange-700",
@@ -179,6 +197,9 @@ export function ExperimentDetail({ experimentId, onBack, onStopped }: Props) {
         <span className="text-xs font-mono text-slate-600">{exp.experiment_id}</span>
       </div>
 
+      {/* Outcome */}
+      {!isActive && <OutcomeCard exp={exp} />}
+
       {/* Stop button */}
       {isActive && (
         <button
@@ -196,6 +217,77 @@ export function ExperimentDetail({ experimentId, onBack, onStopped }: Props) {
             </span>
           ) : "Stop Experiment"}
         </button>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+
+function MetricGauge({ label, value, threshold, inverted = false }: {
+  label: string
+  value: number
+  threshold: number
+  inverted?: boolean
+}) {
+  const pct = Math.min(100, threshold > 0 ? (value / threshold) * 100 : 0)
+  const breached = inverted ? value < threshold : value > threshold
+  const barColor = breached ? "bg-red-500" : "bg-green-500"
+
+  return (
+    <div>
+      <div className="flex justify-between text-xs mb-1">
+        <span className="text-slate-500">{label}</span>
+        <span className={`font-mono font-medium ${breached ? "text-red-600" : "text-green-600"}`}>
+          {(value * (label.includes("Rate") ? 100 : 1)).toFixed(label.includes("Rate") ? 2 : 2)}
+          {label.includes("Rate") ? "%" : "×"}
+          {" "}<span className="text-slate-400 font-normal">
+            / {(threshold * (label.includes("Rate") ? 100 : 1)).toFixed(label.includes("Rate") ? 0 : 1)}
+            {label.includes("Rate") ? "%" : "×"}
+          </span>
+        </span>
+      </div>
+      <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+        <div className={`h-full rounded-full transition-all duration-500 ${barColor}`} style={{ width: `${pct}%` }} />
+      </div>
+    </div>
+  )
+}
+
+function OutcomeCard({ exp }: { exp: Experiment }) {
+  const outcome = getOutcome(exp)
+  const meta = OUTCOME[outcome]
+  const hasMetrics = exp.final_error_rate != null || exp.final_burn_rate != null
+
+  return (
+    <div className={`border rounded-xl overflow-hidden ${meta.bg} border-current border-opacity-20`}
+         style={{ borderColor: outcome === "passed" ? "#16a34a" : outcome === "breached" || outcome === "failed" ? "#dc2626" : "#94a3b8" }}>
+      <div className="px-4 py-3 flex items-center gap-3">
+        <span className={`text-xl font-bold ${meta.text}`}>{meta.icon}</span>
+        <div>
+          <div className={`text-sm font-bold ${meta.text}`}>{meta.label}</div>
+          <div className="text-xs text-slate-500">{meta.desc}</div>
+        </div>
+      </div>
+
+      {hasMetrics && (
+        <div className={`px-4 pb-4 space-y-3 border-t ${outcome === "passed" ? "border-green-100" : "border-red-100"}`}>
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider pt-3">SLO Metrics</p>
+          {exp.final_error_rate != null && exp.error_rate_threshold != null && (
+            <MetricGauge
+              label="Error Rate"
+              value={exp.final_error_rate}
+              threshold={exp.error_rate_threshold}
+            />
+          )}
+          {exp.final_burn_rate != null && exp.burn_rate_threshold != null && (
+            <MetricGauge
+              label="Burn Rate"
+              value={exp.final_burn_rate}
+              threshold={exp.burn_rate_threshold}
+            />
+          )}
+        </div>
       )}
     </div>
   )

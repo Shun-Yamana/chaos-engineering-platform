@@ -53,22 +53,28 @@ def get_running_experiments(service: str) -> list:
     return resp.get("Items", [])
 
 
-def stop_experiment(experiment: dict, reason: str):
+def stop_experiment(experiment: dict, reason: str, final_error_rate: float | None = None, final_burn_rate: float | None = None):
     table = dynamodb.Table(EXPERIMENT_TABLE)
     now = datetime.now(timezone.utc).isoformat()
+
+    update_expr = "SET #st = :stopped, stopped_at = :now, stop_reason = :reason"
+    values = {":stopped": "stopped", ":now": now, ":reason": reason}
+
+    if final_error_rate is not None:
+        update_expr += ", final_error_rate = :fer"
+        values[":fer"] = str(round(final_error_rate, 6))
+    if final_burn_rate is not None:
+        update_expr += ", final_burn_rate = :fbr"
+        values[":fbr"] = str(round(final_burn_rate, 6))
 
     table.update_item(
         Key={
             "experiment_id": experiment["experiment_id"],
             "started_at": experiment["started_at"],
         },
-        UpdateExpression="SET #st = :stopped, stopped_at = :now, stop_reason = :reason",
+        UpdateExpression=update_expr,
         ExpressionAttributeNames={"#st": "status"},
-        ExpressionAttributeValues={
-            ":stopped": "stopped",
-            ":now": now,
-            ":reason": reason,
-        },
+        ExpressionAttributeValues=values,
     )
     logger.info(json.dumps({
         "action": "experiment_stopped",
@@ -144,7 +150,7 @@ def handler(event, context):
 
         experiments = get_running_experiments(service)
         for experiment in experiments:
-            stop_experiment(experiment, reason)
+            stop_experiment(experiment, reason, final_error_rate=error_rate, final_burn_rate=burn_rate)
             publish_alert(service, sli, slo, experiment["experiment_id"], reason)
             stopped.append(experiment["experiment_id"])
 

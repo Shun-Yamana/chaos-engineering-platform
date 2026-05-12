@@ -17,6 +17,8 @@ export interface Experiment {
   fault_rate?: number
   error_rate_threshold?: number
   burn_rate_threshold?: number
+  final_error_rate?: number
+  final_burn_rate?: number
 }
 
 export interface StartPayload {
