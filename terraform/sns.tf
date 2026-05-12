@@ -6,17 +6,17 @@ resource "aws_sns_topic" "chaos_alerts" {
   lambda_failure_feedback_role_arn = aws_iam_role.sns_feedback.arn
   http_failure_feedback_role_arn   = aws_iam_role.sns_feedback.arn
 
-  # Slack への配信を粘り強くリトライ
-  # 3回 → 20s固定、その後指数バックオフで最大300s、70回は300s固定 (合計100回)
+  # Slack への配信リトライ
+  # 2回 → 20s固定、その後指数バックオフで最大300s、3回は300s固定 (合計10回、総時間 ≤ 1840s)
   delivery_policy = jsonencode({
     http = {
       defaultHealthyRetryPolicy = {
         minDelayTarget     = 20
         maxDelayTarget     = 300
-        numRetries         = 100
+        numRetries         = 10
         numNoDelayRetries  = 0
-        numMinDelayRetries = 3
-        numMaxDelayRetries = 70
+        numMinDelayRetries = 2
+        numMaxDelayRetries = 3
         backoffFunction    = "exponential"
       }
       disableSubscriptionOverrides = false
@@ -39,7 +39,17 @@ resource "aws_sns_topic_policy" "chaos_alerts" {
         Principal = {
           AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
         }
-        Action   = "sns:*"
+        Action   = [
+          "SNS:GetTopicAttributes",
+          "SNS:SetTopicAttributes",
+          "SNS:AddPermission",
+          "SNS:RemovePermission",
+          "SNS:DeleteTopic",
+          "SNS:Subscribe",
+          "SNS:ListSubscriptionsByTopic",
+          "SNS:Publish",
+          "SNS:Receive"
+        ]
         Resource = aws_sns_topic.chaos_alerts.arn
       },
       {

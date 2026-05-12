@@ -7,7 +7,7 @@ metadata:
   name: chaos-agent
   namespace: chaos
   annotations:
-    eks.amazonaws.com/role-arn: CHAOS_AGENT_ROLE_ARN
+    eks.amazonaws.com/role-arn: arn:aws:iam::203553641035:role/chaos-agent-role
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -67,7 +67,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: chaos-agent
-          image: CHAOS_AGENT_IMAGE
+          image: 203553641035.dkr.ecr.ap-northeast-1.amazonaws.com/chaos-platform/chaos-agent:latest
           securityContext:
             runAsNonRoot: true
             allowPrivilegeEscalation: false
@@ -76,11 +76,11 @@ spec:
               drop: ["ALL"]
           env:
             - name: FIS_TEMPLATE_SERVICE_A
-              value: PLACEHOLDER_FIS_TEMPLATE_SERVICE_A
+              value: EXT3Y6BeZjof7Jztg
             - name: FIS_TEMPLATE_SERVICE_B
-              value: PLACEHOLDER_FIS_TEMPLATE_SERVICE_B
+              value: EXT9xpYX51fiNnL
             - name: TABLE_NAME
-              value: PLACEHOLDER_TABLE_NAME
+              value: chaos-platform-experiment-history
             - name: AWS_REGION
               value: ap-northeast-1
           resources:

@@ -66,18 +66,11 @@ resource "aws_fis_experiment_template" "network_latency" {
     resource_type  = "aws:eks:pod"
     selection_mode = "ALL"
 
-    filter {
-      path   = "Namespace"
-      values = ["default"]
-    }
-
-    filter {
-      path   = "Labels.app"
-      values = [each.key]
-    }
-
     parameters = {
       clusterIdentifier = module.eks.cluster_name
+      namespace         = "default"
+      selectorType      = "labelSelector"
+      selectorValue     = "app=${each.key}"
     }
   }
 
@@ -95,6 +88,11 @@ resource "aws_fis_experiment_template" "network_latency" {
       value = "500"
     }
 
+    parameter {
+      key   = "kubernetesServiceAccount"
+      value = "default"
+    }
+
     target {
       key   = "Pods"
       value = "pods"
@@ -107,7 +105,7 @@ resource "aws_fis_experiment_template" "network_latency" {
 
   # 既存の /aws/fis/${var.project_name} ロググループに接続（ARN 末尾の :* は FIS の要件）
   log_configuration {
-    log_schema_version = 1
+    log_schema_version = 2
     cloudwatch_logs_configuration {
       log_group_arn = "${aws_cloudwatch_log_group.fis.arn}:*"
     }

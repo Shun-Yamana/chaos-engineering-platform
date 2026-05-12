@@ -34,7 +34,7 @@ spec:
               app: service-b
       containers:
         - name: service-b
-          image: SERVICE_B_IMAGE
+          image: 203553641035.dkr.ecr.ap-northeast-1.amazonaws.com/chaos-platform/service-b:latest
           ports:
             - containerPort: 8000
           env:

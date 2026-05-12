@@ -46,7 +46,7 @@ function fmt(iso: string) {
   return iso.slice(0, 19).replace("T", " ") + " UTC"
 }
 
-export function ExperimentDetail({ experimentId, onBack, onStopped }: Props) {
+export function ExperimentDetail({ experimentId, onBack: _onBack, onStopped }: Props) {
   const [exp, setExp] = useState<Experiment | null>(null)
   const [loading, setLoading] = useState(true)
   const [stopping, setStopping] = useState(false)

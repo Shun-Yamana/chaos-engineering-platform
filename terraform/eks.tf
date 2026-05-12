@@ -15,12 +15,38 @@ module "eks" {
 # EKS アドオン (ADR 011 item 7)
 # ---------------------------------------------------------------------------
 
-resource "aws_eks_addon" "coredns" {
-  cluster_name = module.eks.cluster_name
-  addon_name   = "coredns"
-  tags         = local.common_tags
+# Fargate 上の coredns は eks.amazonaws.com/compute-type: ec2 アノテーションを
+# 削除しないと Pending のまま DEGRADED になる（EKS Fargate の既知制約）
+# addon 作成より先に patch することで ACTIVE になる
+resource "null_resource" "patch_coredns_fargate" {
+  triggers = {
+    cluster_name = module.eks.cluster_name
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.aws_region}
+      kubectl patch deployment coredns -n kube-system --type json \
+        -p '[{"op":"remove","path":"/spec/template/metadata/annotations/eks.amazonaws.com~1compute-type"}]' || true
+      kubectl rollout status deployment/coredns -n kube-system --timeout=300s || true
+    EOT
+  }
 
   depends_on = [module.eks]
+}
+
+resource "aws_eks_addon" "coredns" {
+  cluster_name                = module.eks.cluster_name
+  addon_name                  = "coredns"
+  resolve_conflicts_on_create = "OVERWRITE"
+  resolve_conflicts_on_update = "OVERWRITE"
+  tags                        = local.common_tags
+
+  depends_on = [null_resource.patch_coredns_fargate]
+
+  timeouts {
+    create = "30m"
+  }
 }
 
 resource "aws_eks_addon" "vpc_cni" {
@@ -36,12 +62,14 @@ resource "aws_eks_addon" "vpc_cni" {
 }
 
 resource "aws_eks_addon" "cloudwatch_observability" {
-  cluster_name             = module.eks.cluster_name
-  addon_name               = "amazon-cloudwatch-observability"
-  service_account_role_arn = aws_iam_role.cloudwatch_agent.arn
-  tags                     = local.common_tags
+  cluster_name                = module.eks.cluster_name
+  addon_name                  = "amazon-cloudwatch-observability"
+  service_account_role_arn    = aws_iam_role.cloudwatch_agent.arn
+  resolve_conflicts_on_create = "OVERWRITE"
+  resolve_conflicts_on_update = "OVERWRITE"
+  tags                        = local.common_tags
 
-  depends_on = [module.eks]
+  depends_on = [aws_eks_addon.coredns]
 }
 
 # ---------------------------------------------------------------------------

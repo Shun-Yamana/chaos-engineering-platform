@@ -16,7 +16,7 @@ const FAULT_META: Record<string, { label: string; desc: string; icon: string; ac
   network_latency:   { label: "Net Latency",   desc: "Injects delay via AWS FIS",           icon: "⏱", accent: "text-blue-600",   border: "border-blue-300 bg-blue-50"   },
 }
 
-export function ExperimentForm({ onBack, onStarted }: Props) {
+export function ExperimentForm({ onBack: _onBack, onStarted }: Props) {
   const [form, setForm] = useState({
     name: "",
     service: "service-a",

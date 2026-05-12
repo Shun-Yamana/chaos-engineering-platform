@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 dynamodb = boto3.resource(
     "dynamodb",
+    region_name=os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION")),
     endpoint_url=os.environ.get("DYNAMODB_ENDPOINT_URL"),
 )
 
@@ -53,7 +54,8 @@ class ChaosAgent:
         self._stress_targets: dict[str, str] = {}        # experiment_id -> pod_name
         self._fis_experiments: dict[str, str] = {}       # experiment_id -> FIS experiment id
         self._temp_fis_templates: dict[str, str] = {}    # experiment_id -> temp template id
-        self._fis = boto3.client("fis")
+        _region = os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION"))
+        self._fis = boto3.client("fis", region_name=_region)
 
     def _get_pods(self, namespace: str, service: str) -> list:
         pods = self.core_v1.list_namespaced_pod(

@@ -41,7 +41,7 @@ resource "aws_iam_role_policy_attachment" "eks_cluster_policy" {
 
 resource "aws_security_group" "eks_cluster" {
   name        = "${var.project_name}-eks-cluster-sg"
-  description = "EKS control plane SG (① Cluster SG)"
+  description = "EKS control plane SG (Cluster SG)"
   vpc_id      = var.vpc_id
 
   egress {
@@ -56,7 +56,7 @@ resource "aws_security_group" "eks_cluster" {
 
 resource "aws_security_group" "pod_eni" {
   name        = "${var.project_name}-pod-eni-sg"
-  description = "Fargate Pod ENI SG (② Pod ENI SG). Applied via SecurityGroupPolicy CRD."
+  description = "Fargate Pod ENI SG (Pod ENI SG). Applied via SecurityGroupPolicy CRD."
   vpc_id      = var.vpc_id
 
   egress {
@@ -148,14 +148,25 @@ resource "aws_iam_policy" "fargate_pod_execution" {
         Resource = "*"
       },
       {
-        Sid    = "ECRPull"
+        Sid    = "ECRPullOwn"
         Effect = "Allow"
         Action = [
           "ecr:BatchCheckLayerAvailability",
           "ecr:GetDownloadUrlForLayer",
           "ecr:BatchGetImage",
         ]
-        Resource = "arn:aws:ecr:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:repository/chaos-*"
+        Resource = "arn:aws:ecr:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:repository/*"
+      },
+      {
+        # EKS アドオン（coredns / vpc-cni 等）は AWS マネージド ECR アカウントから pull
+        Sid    = "ECRPullEKSManaged"
+        Effect = "Allow"
+        Action = [
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:BatchGetImage",
+        ]
+        Resource = "arn:aws:ecr:${data.aws_region.current.name}:602401143452:repository/*"
       },
       {
         Sid    = "CloudWatchLogs"
@@ -236,6 +247,18 @@ resource "aws_eks_fargate_profile" "aws_observability" {
   subnet_ids             = var.private_subnet_ids
 
   selector { namespace = "aws-observability" }
+
+  tags       = var.tags
+  depends_on = [aws_iam_role_policy_attachment.fargate_pod_execution_policy]
+}
+
+resource "aws_eks_fargate_profile" "amazon_cloudwatch" {
+  cluster_name           = aws_eks_cluster.main.name
+  fargate_profile_name   = "${var.project_name}-fargate-amazon-cloudwatch"
+  pod_execution_role_arn = aws_iam_role.fargate_pod_execution.arn
+  subnet_ids             = var.private_subnet_ids
+
+  selector { namespace = "amazon-cloudwatch" }
 
   tags       = var.tags
   depends_on = [aws_iam_role_policy_attachment.fargate_pod_execution_policy]
