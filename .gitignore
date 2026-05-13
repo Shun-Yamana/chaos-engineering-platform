@@ -34,3 +34,6 @@ Thumbs.db
 *.pem
 *.key
 secrets/
+
+# Terraform 生成ファイル
+k8s/ingress.yaml

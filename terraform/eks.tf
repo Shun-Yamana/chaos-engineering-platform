@@ -96,6 +96,37 @@ resource "aws_eks_access_policy_association" "github_actions" {
   depends_on = [aws_eks_access_entry.github_actions]
 }
 
+# ---------------------------------------------------------------------------
+# Ingress マニフェスト自動生成・適用
+# cloudfront_origin_secret が apply のたびに変わるため、
+# templatefile で ingress.yaml を生成し kubectl apply で反映する
+# ---------------------------------------------------------------------------
+
+resource "local_file" "ingress_yaml" {
+  content = templatefile("${path.module}/../k8s/ingress.yaml.tpl", {
+    origin_secret   = random_password.cloudfront_origin_secret.result
+    alb_logs_bucket = "${var.project_name}-alb-logs-${data.aws_caller_identity.current.account_id}"
+  })
+  filename = "${path.module}/../k8s/ingress.yaml"
+}
+
+resource "null_resource" "apply_ingress" {
+  triggers = {
+    origin_secret = random_password.cloudfront_origin_secret.result
+    ingress_hash  = local_file.ingress_yaml.content_md5
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.aws_region}
+      kubectl apply -f ${path.module}/../k8s/ingress.yaml
+    EOT
+  }
+
+  depends_on = [module.eks, local_file.ingress_yaml]
+}
+
+# ---------------------------------------------------------------------------
 # FIS がターゲット解決（Pod 一覧取得）に使う Kubernetes API 呼び出しを許可
 resource "aws_eks_access_entry" "fis" {
   cluster_name  = module.eks.cluster_name

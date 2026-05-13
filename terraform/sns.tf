@@ -2,10 +2,6 @@ resource "aws_sns_topic" "chaos_alerts" {
   name              = "${var.project_name}-alerts"
   kms_master_key_id = "alias/aws/sns"
 
-  # Lambda・HTTPS(Slack) 両サブスクリプションの配信失敗を CloudWatch Logs に記録
-  lambda_failure_feedback_role_arn = aws_iam_role.sns_feedback.arn
-  http_failure_feedback_role_arn   = aws_iam_role.sns_feedback.arn
-
   # Slack への配信リトライ
   # 2回 → 20s固定、その後指数バックオフで最大300s、3回は300s固定 (合計10回、総時間 ≤ 1840s)
   delivery_policy = jsonencode({
