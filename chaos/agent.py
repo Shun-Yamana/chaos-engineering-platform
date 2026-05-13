@@ -9,7 +9,6 @@ from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
-from kubernetes.stream import stream
 from boto3.dynamodb.conditions import Attr
 
 logging.basicConfig(
@@ -42,6 +41,7 @@ class Experiment:
     started_at: str | None = None
     latency_ms: int = 500
     fault_rate: float = 0.5
+    memory_stress_mb: int = 256
 
 
 class ChaosAgent:
@@ -53,7 +53,6 @@ class ChaosAgent:
 
         self.core_v1 = client.CoreV1Api()
         self.apps_v1 = client.AppsV1Api()
-        self._stress_targets: dict[str, str] = {}        # experiment_id -> pod_name
 
     def _get_pods(self, namespace: str, service: str) -> list:
         pods = self.core_v1.list_namespaced_pod(
@@ -115,89 +114,64 @@ class ChaosAgent:
         logger.info(f"[{experiment.experiment_id}] killed pod: {pod_name}")
 
     # --- cpu_stress ---
+    # EKS Fargate はエフェメラルコンテナ非対応のため、
+    # Deployment の CPU_STRESS 環境変数でアプリレベル CPU 負荷を注入する。
 
     def cpu_stress_inject(self, experiment: Experiment):
-        pods = self._get_pods(experiment.namespace, experiment.service)
-        if not pods:
-            raise RuntimeError(f"No running pods found for service={experiment.service}")
+        deployment = self._get_deployment(experiment.namespace, experiment.service)
 
-        pod_name = pods[0].metadata.name
-        self._stress_targets[experiment.experiment_id] = pod_name
+        for container in deployment.spec.template.spec.containers:
+            if container.name == experiment.service:
+                if container.env is None:
+                    container.env = []
+                container.env = [e for e in container.env if e.name != "CPU_STRESS"]
+                container.env.append(client.V1EnvVar(name="CPU_STRESS", value="true"))
+                break
 
-        body = {
-            "spec": {
-                "ephemeralContainers": [{
-                    "name": "stress-ng-cpu",
-                    "image": "alexeiled/stress-ng:latest",
-                    "args": ["--cpu", "1", "--timeout", str(experiment.duration_seconds)],
-                    "resources": {
-                        "requests": {"cpu": "256m", "memory": "64Mi"},
-                        "limits": {"cpu": "512m", "memory": "128Mi"},
-                    },
-                }]
-            }
-        }
-        self.core_v1.patch_namespaced_pod_ephemeralcontainers(
-            name=pod_name, namespace=experiment.namespace, body=body
-        )
-        logger.info(f"[{experiment.experiment_id}] stress-ng-cpu injected into pod={pod_name}")
+        self._patch_deployment(experiment.namespace, experiment.service, deployment)
+        logger.info(f"[{experiment.experiment_id}] CPU_STRESS=true patched")
 
     def cpu_stress_remove(self, experiment: Experiment):
-        pod_name = self._stress_targets.pop(experiment.experiment_id, None)
-        if pod_name:
-            self._pkill_stress(pod_name, experiment.namespace, experiment.experiment_id, "stress-ng-cpu")
-        else:
-            for pod in self._get_pods(experiment.namespace, experiment.service):
-                self._pkill_stress(pod.metadata.name, experiment.namespace, experiment.experiment_id, "stress-ng-cpu")
+        deployment = self._get_deployment(experiment.namespace, experiment.service)
+
+        for container in deployment.spec.template.spec.containers:
+            if container.name == experiment.service:
+                if container.env:
+                    container.env = [e for e in container.env if e.name != "CPU_STRESS"]
+                break
+
+        self._patch_deployment(experiment.namespace, experiment.service, deployment)
+        logger.info(f"[{experiment.experiment_id}] CPU_STRESS removed")
 
     # --- memory_stress ---
+    # EKS Fargate はエフェメラルコンテナ非対応のため、
+    # Deployment の MEMORY_STRESS_MB 環境変数でアプリレベルメモリ確保を注入する。
 
     def memory_stress_inject(self, experiment: Experiment):
-        pods = self._get_pods(experiment.namespace, experiment.service)
-        if not pods:
-            raise RuntimeError(f"No running pods found for service={experiment.service}")
+        deployment = self._get_deployment(experiment.namespace, experiment.service)
 
-        pod_name = pods[0].metadata.name
-        self._stress_targets[experiment.experiment_id] = pod_name
+        for container in deployment.spec.template.spec.containers:
+            if container.name == experiment.service:
+                if container.env is None:
+                    container.env = []
+                container.env = [e for e in container.env if e.name != "MEMORY_STRESS_MB"]
+                container.env.append(client.V1EnvVar(name="MEMORY_STRESS_MB", value=str(experiment.memory_stress_mb)))
+                break
 
-        body = {
-            "spec": {
-                "ephemeralContainers": [{
-                    "name": "stress-ng-mem",
-                    "image": "alexeiled/stress-ng:latest",
-                    "args": ["--vm", "1", "--vm-bytes", "80%", "--timeout", str(experiment.duration_seconds)],
-                    "resources": {
-                        "requests": {"cpu": "64m", "memory": "256Mi"},
-                        "limits": {"cpu": "128m", "memory": "512Mi"},
-                    },
-                }]
-            }
-        }
-        self.core_v1.patch_namespaced_pod_ephemeralcontainers(
-            name=pod_name, namespace=experiment.namespace, body=body
-        )
-        logger.info(f"[{experiment.experiment_id}] stress-ng-mem injected into pod={pod_name}")
+        self._patch_deployment(experiment.namespace, experiment.service, deployment)
+        logger.info(f"[{experiment.experiment_id}] MEMORY_STRESS_MB={experiment.memory_stress_mb} patched")
 
     def memory_stress_remove(self, experiment: Experiment):
-        pod_name = self._stress_targets.pop(experiment.experiment_id, None)
-        if pod_name:
-            self._pkill_stress(pod_name, experiment.namespace, experiment.experiment_id, "stress-ng-mem")
-        else:
-            for pod in self._get_pods(experiment.namespace, experiment.service):
-                self._pkill_stress(pod.metadata.name, experiment.namespace, experiment.experiment_id, "stress-ng-mem")
+        deployment = self._get_deployment(experiment.namespace, experiment.service)
 
-    def _pkill_stress(self, pod_name: str, namespace: str, experiment_id: str, container: str):
-        try:
-            stream(
-                self.core_v1.connect_get_namespaced_pod_exec,
-                pod_name, namespace,
-                command=["pkill", "stress-ng"],
-                container=container,
-                stderr=True, stdin=False, stdout=True, tty=False,
-            )
-            logger.info(f"[{experiment_id}] stress-ng killed in pod={pod_name}")
-        except ApiException as e:
-            logger.warning(f"[{experiment_id}] pkill skipped (already exited?) pod={pod_name}: {e.status}")
+        for container in deployment.spec.template.spec.containers:
+            if container.name == experiment.service:
+                if container.env:
+                    container.env = [e for e in container.env if e.name != "MEMORY_STRESS_MB"]
+                break
+
+        self._patch_deployment(experiment.namespace, experiment.service, deployment)
+        logger.info(f"[{experiment.experiment_id}] MEMORY_STRESS_MB removed")
 
     # --- http_error_inject ---
 
@@ -363,6 +337,7 @@ def _item_to_experiment(item: dict) -> Experiment:
         started_at=item.get("started_at"),
         latency_ms=int(item.get("latency_ms", 500)),
         fault_rate=float(item.get("fault_rate", 0.5)),
+        memory_stress_mb=int(item.get("memory_stress_mb", 256)),
     )
 
 

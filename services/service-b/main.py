@@ -1,6 +1,7 @@
 import os
 import asyncio
 import logging
+import threading
 import httpx
 from fastapi import FastAPI, HTTPException
 
@@ -17,6 +18,22 @@ def _latency_ms() -> int:
         return int(os.getenv("LATENCY_MS", "0"))
     except ValueError:
         return 0
+
+
+# --- CPU stress ---
+if os.getenv("CPU_STRESS", "").lower() == "true":
+    def _cpu_burner():
+        logger.info("cpu-stress thread started")
+        while True:
+            _ = sum(i * i for i in range(50000))
+    threading.Thread(target=_cpu_burner, daemon=True, name="cpu-stress").start()
+
+# --- Memory stress ---
+_memory_buffer: bytearray | None = None
+_memory_stress_mb = int(os.getenv("MEMORY_STRESS_MB", "0") or "0")
+if _memory_stress_mb > 0:
+    _memory_buffer = bytearray(_memory_stress_mb * 1024 * 1024)
+    logger.info(f"memory-stress: allocated {_memory_stress_mb}MB")
 
 
 @app.get("/health")

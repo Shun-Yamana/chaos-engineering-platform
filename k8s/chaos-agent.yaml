@@ -17,12 +17,6 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "delete"]
-  - apiGroups: [""]
-    resources: ["pods/ephemeralcontainers"]
-    verbs: ["patch"]
-  - apiGroups: [""]
-    resources: ["pods/exec"]
-    verbs: ["create"]
   - apiGroups: ["apps"]
     resources: ["deployments"]
     verbs: ["get", "patch"]
@@ -75,20 +69,16 @@ spec:
             capabilities:
               drop: ["ALL"]
           env:
-            - name: FIS_TEMPLATE_SERVICE_A
-              value: EXT3Y6BeZjof7Jztg
-            - name: FIS_TEMPLATE_SERVICE_B
-              value: EXT9xpYX51fiNnL
             - name: TABLE_NAME
               value: chaos-platform-experiment-history
             - name: AWS_REGION
               value: ap-northeast-1
             - name: SERVICE_B_URL
-              value: http://k8s-default-serviceb-64e7c32426-1656013177.ap-northeast-1.elb.amazonaws.com/items/1
+              value: http://k8s-default-serviceb-64e7c32426-905985252.ap-northeast-1.elb.amazonaws.com/items/1
             - name: TRAFFIC_GEN_INTERVAL
               value: "30"
             - name: ALB_ORIGIN_SECRET
-              value: N1w19W57hgjjwCD8ODeGCVbtYGphuW6c
+              value: fLORutDU9AqgI2QQl5tbQspmOYRZdSIi
           resources:
             requests:
               cpu: "64m"
