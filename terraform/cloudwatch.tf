@@ -130,6 +130,36 @@ locals {
         annotations = { horizontal = [{ value = 300, label = "Alarm threshold", color = "#ff6961" }] }
       }
     },
+    {
+      type   = "metric"
+      x      = 0
+      y      = 18
+      width  = 12
+      height = 6
+      properties = {
+        title   = "service-a Process CPU (%)"
+        view    = "timeSeries"
+        region  = var.aws_region
+        metrics = [["ChaosExperiment", "ProcessCpuPercent", "Service", "service-a", { stat = "Maximum", period = 60 }]]
+        yAxis   = { left = { min = 0, max = 100 } }
+        annotations = { horizontal = [{ value = 30, label = "Alarm threshold", color = "#ff6961" }] }
+      }
+    },
+    {
+      type   = "metric"
+      x      = 12
+      y      = 18
+      width  = 12
+      height = 6
+      properties = {
+        title   = "service-a Process Memory (MB)"
+        view    = "timeSeries"
+        region  = var.aws_region
+        metrics = [["ChaosExperiment", "ProcessMemoryMB", "Service", "service-a", { stat = "Maximum", period = 60 }]]
+        yAxis   = { left = { min = 0 } }
+        annotations = { horizontal = [{ value = 300, label = "Alarm threshold", color = "#ff6961" }] }
+      }
+    },
   ])
 }
 
@@ -256,6 +286,50 @@ resource "aws_cloudwatch_metric_alarm" "service_b_memory_high" {
   statistic   = "Maximum"
   dimensions = {
     Service = "service-b"
+  }
+
+  alarm_actions = [aws_sns_topic.chaos_alerts.arn]
+  ok_actions    = [aws_sns_topic.chaos_alerts.arn]
+  tags          = local.common_tags
+}
+
+# ⑥ service-a CPU 使用率 > 30%
+resource "aws_cloudwatch_metric_alarm" "service_a_cpu_high" {
+  alarm_name          = "${var.project_name}-service-a-cpu-high"
+  alarm_description   = "service-a process CPU exceeded 30% (cpu_stress experiment indicator)"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  threshold           = 30
+  treat_missing_data  = "notBreaching"
+
+  metric_name = "ProcessCpuPercent"
+  namespace   = "ChaosExperiment"
+  period      = 60
+  statistic   = "Maximum"
+  dimensions = {
+    Service = "service-a"
+  }
+
+  alarm_actions = [aws_sns_topic.chaos_alerts.arn]
+  ok_actions    = [aws_sns_topic.chaos_alerts.arn]
+  tags          = local.common_tags
+}
+
+# ⑦ service-a メモリ使用量 > 300MB
+resource "aws_cloudwatch_metric_alarm" "service_a_memory_high" {
+  alarm_name          = "${var.project_name}-service-a-memory-high"
+  alarm_description   = "service-a process memory exceeded 300MB (memory_stress experiment indicator)"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  threshold           = 300
+  treat_missing_data  = "notBreaching"
+
+  metric_name = "ProcessMemoryMB"
+  namespace   = "ChaosExperiment"
+  period      = 60
+  statistic   = "Maximum"
+  dimensions = {
+    Service = "service-a"
   }
 
   alarm_actions = [aws_sns_topic.chaos_alerts.arn]
