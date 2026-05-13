@@ -46,8 +46,15 @@ resource "aws_cloudwatch_log_group" "api_gateway" {
 # experiment_report_configuration.data_sources から参照される
 # ---------------------------------------------------------------------------
 
+# Fargate Fluent Bit アプリログ (EMF メトリクス抽出もここから行われる)
+resource "aws_cloudwatch_log_group" "eks_workloads" {
+  name              = "/aws/eks/${var.project_name}-cluster/workloads"
+  retention_in_days = 30
+  tags              = local.common_tags
+}
+
 locals {
-  dashboard_widgets = local.alb_alarms_enabled ? [
+  _alb_widgets = local.alb_alarms_enabled ? [
     {
       type   = "metric"
       x      = 0
@@ -91,6 +98,39 @@ locals {
       }
     },
   ] : []
+
+  dashboard_widgets = concat(local._alb_widgets, [
+    {
+      type   = "metric"
+      x      = 0
+      y      = 12
+      width  = 12
+      height = 6
+      properties = {
+        title   = "service-b Process CPU (%)"
+        view    = "timeSeries"
+        region  = var.aws_region
+        metrics = [["ChaosExperiment", "ProcessCpuPercent", "Service", "service-b", { stat = "Maximum", period = 60 }]]
+        yAxis   = { left = { min = 0, max = 100 } }
+        annotations = { horizontal = [{ value = 30, label = "Alarm threshold", color = "#ff6961" }] }
+      }
+    },
+    {
+      type   = "metric"
+      x      = 12
+      y      = 12
+      width  = 12
+      height = 6
+      properties = {
+        title   = "service-b Process Memory (MB)"
+        view    = "timeSeries"
+        region  = var.aws_region
+        metrics = [["ChaosExperiment", "ProcessMemoryMB", "Service", "service-b", { stat = "Maximum", period = 60 }]]
+        yAxis   = { left = { min = 0 } }
+        annotations = { horizontal = [{ value = 300, label = "Alarm threshold", color = "#ff6961" }] }
+      }
+    },
+  ])
 }
 
 resource "aws_cloudwatch_dashboard" "chaos_experiment" {
@@ -171,6 +211,51 @@ resource "aws_cloudwatch_metric_alarm" "service_b_latency_p95" {
   extended_statistic = "p95"
   dimensions = {
     LoadBalancer = var.alb_arn_suffix
+  }
+
+  alarm_actions = [aws_sns_topic.chaos_alerts.arn]
+  ok_actions    = [aws_sns_topic.chaos_alerts.arn]
+  tags          = local.common_tags
+}
+
+# ④ service-b CPU 使用率 > 30% (cpu_stress 実験検知)
+# EMF メトリクス: service-b が stdout に出力 → Fargate Fluent Bit → CloudWatch Logs → 自動抽出
+resource "aws_cloudwatch_metric_alarm" "service_b_cpu_high" {
+  alarm_name          = "${var.project_name}-service-b-cpu-high"
+  alarm_description   = "service-b process CPU exceeded 30% (cpu_stress experiment indicator)"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  threshold           = 30
+  treat_missing_data  = "notBreaching"
+
+  metric_name = "ProcessCpuPercent"
+  namespace   = "ChaosExperiment"
+  period      = 60
+  statistic   = "Maximum"
+  dimensions = {
+    Service = "service-b"
+  }
+
+  alarm_actions = [aws_sns_topic.chaos_alerts.arn]
+  ok_actions    = [aws_sns_topic.chaos_alerts.arn]
+  tags          = local.common_tags
+}
+
+# ⑤ service-b メモリ使用量 > 300MB (memory_stress 実験検知)
+resource "aws_cloudwatch_metric_alarm" "service_b_memory_high" {
+  alarm_name          = "${var.project_name}-service-b-memory-high"
+  alarm_description   = "service-b process memory exceeded 300MB (memory_stress experiment indicator)"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  threshold           = 300
+  treat_missing_data  = "notBreaching"
+
+  metric_name = "ProcessMemoryMB"
+  namespace   = "ChaosExperiment"
+  period      = 60
+  statistic   = "Maximum"
+  dimensions = {
+    Service = "service-b"
   }
 
   alarm_actions = [aws_sns_topic.chaos_alerts.arn]

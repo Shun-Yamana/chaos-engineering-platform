@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aws-observability
+  labels:
+    aws-observability: enabled
+---
+# Fargate log routing: この ConfigMap が存在すると、Fargate が全 Pod に
+# Fluent Bit プロセスを自動注入し stdout/stderr を CloudWatch Logs へ転送する
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aws-logging
+  namespace: aws-observability
+data:
+  # CRI 形式 "timestamp stream flags message" から message だけを抽出
+  parsers.conf: |
+    [PARSER]
+        Name    cri_strip
+        Format  regex
+        Regex   ^\S+\s\S+\s\S+\s(?<message>.+)$
+
+  # log フィールドに CRI パーサーを適用し message フィールドを生成
+  filters.conf: |
+    [FILTER]
+        Name         parser
+        Match        *
+        Key_Name     log
+        Parser       cri_strip
+
+  # message フィールドの値だけを CloudWatch Logs へ送信
+  # → 純粋な JSON になるので EMF が正しく抽出される
+  output.conf: |
+    [OUTPUT]
+        Name              cloudwatch_logs
+        Match             *
+        region            ap-northeast-1
+        log_group_name    /aws/eks/chaos-platform-cluster/workloads
+        log_stream_prefix from-fluent-bit-
+        auto_create_group true
+        extra_user_agent  container-insights
+        log_key           message
