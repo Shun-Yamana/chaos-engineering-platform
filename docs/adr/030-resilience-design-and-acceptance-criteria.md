@@ -34,11 +34,30 @@ ADR 005〜009 は各実験の「合格基準（数値）」を定義したが、
 
 ---
 
+## 合格基準の設計思想
+
+auto-stopper は SLO 違反時の **安全装置**（緊急停止）であり、レジリエンスの品質を測るものではない。合格基準は以下の 2 フェーズで評価する。
+
+```
+Phase A — 吸収（Absorption）: 障害注入中、SLO を守り続けられたか
+Phase B — 回復（TTR: Time To Recovery）: 障害除去後、どのスピードでベースラインに戻ったか
+```
+
+**ベースライン定義**（実験開始前 5 分間の平均値で測定）
+
+| メトリクス | ベースライン閾値 |
+|---|---|
+| エラーレート | ≤ 0.5% |
+| P95 レイテンシ（ALB） | ≤ 100ms |
+| service-a P95（EMF） | ≤ 50ms |
+
+---
+
 ## レジリエンスパターンと合格基準
 
 ### 1. pod_kill
 
-**目標**：1台 Kill されても **エラーレート ≤ 1%** を維持する
+**目標**：1台 Kill されてもトラフィックを無断絶処理し、冗長性を速やかに復元する
 
 | レイヤー | 実装 | 効果 |
 |---|---|---|
@@ -49,147 +68,258 @@ ADR 005〜009 は各実験の「合格基準（数値）」を定義したが、
 | ☁️ | `topologySpreadConstraints` maxSkew: 1 | AZ 分散。AZ 障害でも全 Pod 同時死にを防ぐ |
 | 🖥️ | SIGTERM ハンドリング（graceful shutdown 5s） | Kill 時に処理中リクエストを完了してから終了 |
 
-**合格基準**
+**Phase A — 吸収**
 
-| メトリクス | 閾値 | 計測元 |
+| メトリクス | 閾値 | 根拠 |
 |---|---|---|
-| Kill 後 60s 間のエラーレート | ≤ 1% | ALB `HTTPCode_Target_5XX_Count / RequestCount` |
-| Pod 再起動後のトラフィック受信開始 | readiness probe 通過後のみ | K8s readiness probe |
-| auto-stopper 発動 | しないこと | DynamoDB `status = "stopped"` の不在 |
-| 回復時間（エラーレート 0% に戻るまで） | ≤ 60s | CloudWatch ALB メトリクス |
+| Kill 直後 60s のエラーレート | **≤ 1%** | replicas=2 で他 Pod が全トラフィックを処理。ALB deregistration window（10s）での一時スパイクのみ許容 |
+
+**Phase B — TTR（障害除去 = Kill イベント発生時点から計測）**
+
+| メトリクス | 閾値 | 根拠 |
+|---|---|---|
+| エラーレートがベースライン（≤ 0.5%）に戻るまで | **≤ 60s** | Fargate 起動 + readiness probe 通過の上限 |
+| Pod 数が 2 に回復するまで | **≤ 90s** | 冗長性の復元確認 |
+
+*安全網*: auto-stopper 不発動（エラーレートが SLO の 5% を超えたら設計の失敗）
 
 ---
 
 ### 2. cpu_stress
 
-**目標**：CPU 高負荷中も **P95 レイテンシ ≤ 1000ms / エラーレート ≤ 5%** を維持する
+**目標**：CPU 高負荷中も P95 ≤ 1000ms を維持し、除去後 60s 以内にベースラインへ回復する
 
 | レイヤー | 実装 | 効果 |
 |---|---|---|
 | ☁️ | `resources.limits.cpu: 256m` 明示 | バーナースレッドの暴走に上限。CPU throttling で他 Pod への影響を隔離 |
-| ☁️ | HPA `targetCPUUtilizationPercentage: 60` | CPU 高負荷 → Pod スケールアウト → 1 Pod あたりのリクエスト減 → CPU 争奪緩和 |
-| ☁️ | KEDA（発展）CloudWatch ALB `RequestCountPerTarget` ベース | HPA より高速な反応。CPU ではなくリクエスト量をトリガーにできる |
+| ☁️ | HPA `targetCPUUtilizationPercentage: 60` | CPU 高負荷 → Pod スケールアウト → 1 Pod あたりのリクエスト密度が下がり P95 緩和 |
 
-> **注意**: env var パッチによるストレス注入は新たにスケールアウトした Pod にも同じ env が適用されるため、CPU stress は全 Pod で発生する。それでも Pod 数が増えることで 1 Pod あたりのリクエスト密度が下がり p95 の改善は見込める。
+> **注意**: env var パッチで注入された CPU ストレスはスケールアウトした新 Pod にも適用される。それでも Pod 数増加で 1 Pod 当たりのリクエスト密度が下がるため P95 改善は見込める。CPU ベース HPA が最初のデモ。リクエスト数ベースは KEDA で発展段階。
 
-**合格基準**
+**Phase A — 吸収**
 
-| メトリクス | 閾値 | 計測元 |
+| メトリクス | 閾値 | 根拠 |
 |---|---|---|
-| P95 レイテンシ（実験中） | ≤ 1000ms | ALB `TargetResponseTime` ExtendedStatistics p95 |
-| エラーレート | ≤ 5% | ALB `HTTPCode_Target_5XX_Count / RequestCount` |
-| HPA スケールアウト | 5 分以内に Pod 数 ≥ 2 | CloudWatch `ContainerInsights pod_number_of_running_containers` |
-| auto-stopper 発動 | しないこと | DynamoDB |
+| P95 レイテンシ（実験全体） | **≤ 1000ms** | ADR 006 定義。timeout=3s の 1/3 以内 |
+| エラーレート | **≤ 5%** | SLO |
+| HPA スケールアウト | **5 分以内に Pod 数 ≥ 2** | HPA デフォルト評価間隔 15s × stabilization |
+
+**Phase B — TTR（CPU_STRESS 環境変数除去時点から計測）**
+
+| メトリクス | 閾値 | 根拠 |
+|---|---|---|
+| P95 がベースライン（≤ 100ms）に戻るまで | **≤ 60s** | CPU バーナー停止は即時。Pod 再起動は不要なため短い |
+
+*安全網*: auto-stopper 不発動
 
 ---
 
 ### 3. memory_stress
 
-**目標**：OOMKill が発生しても **回復時間 ≤ 60s / エラーレート ≤ 5%** を維持する
+**目標**：OOMKill を Pod 内に封じ込め、60s 以内に自己回復する
 
 | レイヤー | 実装 | 効果 |
 |---|---|---|
-| ☁️ | `resources.limits.memory: 256Mi` 明示 | メモリ暴走時に OOMKill させ障害を Pod 内に閉じ込める。未設定だとノード全体に影響が広がる可能性 |
+| ☁️ | `resources.limits.memory: 256Mi` 明示 | メモリ暴走時に OOMKill させ Pod 内に閉じ込める。未設定だとノード全体に影響が広がる可能性 |
 | ☁️ | `readinessProbe` | OOMKill 後の再起動中 Pod にトラフィックを流さない |
-| ☁️ | `livenessProbe` | OOMKill ではなく **ハングや復旧不能状態**（メモリリークによるプロセス停止）を検知して再起動 |
-| ☁️ | `restartPolicy: Always`（デフォルト） | OOMKill 後に kubelet が自動再起動 |
+| ☁️ | `livenessProbe` | OOMKill ではなく **ハングや復旧不能状態** を検知して再起動（OOMKill 自体は kubelet が処理） |
 
 > **注意**: HPA（メモリベース）はスケールアウトした Pod も同じストレスを受けるため根本解決にならない。「緩和策」として位置づける。
 
-**合格基準**
+**Phase A — 吸収**
 
-| メトリクス | 閾値 | 計測元 |
+| メトリクス | 閾値 | 根拠 |
 |---|---|---|
-| OOMKill 後の回復時間 | ≤ 60s | 実験開始〜エラーレート 0% 復帰のタイムスタンプ差分 |
-| 高負荷中のエラーレート | ≤ 5% | ALB メトリクス |
-| P95 レイテンシ（高負荷中） | ≤ 1000ms | ALB `TargetResponseTime` p95 |
-| auto-stopper 発動 | しないこと | DynamoDB |
+| 高負荷中のエラーレート | **≤ 5%** | SLO |
+| P95 レイテンシ（高負荷中） | **≤ 1000ms** | ADR 007 定義 |
+| OOMKill 後の回復時間（エラーレートが 0% に戻るまで） | **≤ 60s** | readiness probe 設定から算出（ADR 007 と同一） |
+
+**Phase B — TTR（MEMORY_STRESS_MB 除去時点から計測）**
+
+| メトリクス | 閾値 | 根拠 |
+|---|---|---|
+| メモリ使用量がベースライン（≤ 100MB RSS）に戻るまで | **≤ 90s** | 除去後は rolling restart が発生。Fargate 起動込みの上限 |
+| エラーレートがベースラインに戻るまで | **≤ 90s** | 同上 |
+
+*安全網*: auto-stopper 不発動
 
 ---
 
 ### 4. http_error_inject
 
-**目標**：FAULT_RATE=0.5 で auto-stopper が **5 分以内に発動** し、ユーザーには **branded fallback** を返す
+**目標**：FAULT_RATE=0.5 の注入で auto-stopper が 5 分以内に発動し、ユーザーには branded fallback を返す。除去後 2 分以内にエラーレートがゼロに戻る
 
 | レイヤー | 実装 | 効果 |
 |---|---|---|
-| ☁️ | CloudFront custom error response（5xx → 静的フォールバックページ） | ユーザーへの raw 5xx を遮断。origin の 5xx は ALB / CloudWatch で監視継続 |
-| ☁️ | CloudFront origin failover（primary: ALB, secondary: S3 fallback） | ALB が全断した場合の最終防衛 |
-| 🖥️ | リトライ（最大 2 回、指数バックオフ + jitter） in service-a | 1 回目失敗 → 即リトライ。FAULT_RATE=0.5 で実効エラーレートを 25% に削減 |
+| ☁️ | CloudFront custom error response（5xx → 静的フォールバック、HTTP 503） | ユーザーへの raw 5xx を遮断。origin 5xx は ALB / CloudWatch で監視継続 |
+| ☁️ | CloudFront origin failover（primary: ALB, secondary: S3 fallback） | ALB 全断時の最終防衛 |
+| 🖥️ | リトライ（最大 2 回、指数バックオフ + jitter） in service-a | 実効エラーレートを 25%（0.5²）に削減 |
 
-> **注意**: CloudFront custom error response はステータスコードを 200 に変換できるが、やりすぎると監視やクライアントの挙動が壊れる。ポートフォリオでは「ユーザー向け劣化表示」として扱い、`origin 5xx は引き続き CloudWatch で観測可能` であることを明示する。
+> **注意**: CloudFront custom error は HTTP 200 に変換しない（503 を維持する）。監視・クライアント挙動・SEO を壊すリスクがある。
 
-**合格基準**
+> **この実験のみ auto-stopper 発動が主要合格条件**：SLO 違反の観測 → 自動停止のパイプラインが正常動作することそのものを検証する実験であるため。
 
-| メトリクス | 閾値 | 計測元 |
+**Phase A — 吸収**
+
+| メトリクス | 閾値 | 根拠 |
 |---|---|---|
-| origin エラーレート | ≥ 30%（障害が注入されていること確認） | ALB `HTTPCode_Target_5XX_Count / RequestCount` |
-| auto-stopper 発動タイミング | ≤ 5 分（`WINDOW_MINUTES=5` サイクル内） | DynamoDB `status = "stopped"` タイムスタンプ |
-| Slack 通知 | auto-stopper 発動と同時 | Slack webhook 受信ログ |
-| CloudFront fallback 配信 | 5xx に対して fallback が返ること | CloudFront `5xxErrorRate` vs `TotalErrorRate` の乖離 |
+| origin エラーレート（障害確認） | **≥ 30%** | FAULT_RATE=0.5 が正しく機能していること |
+| auto-stopper 発動タイミング | **≤ 5 分** | `WINDOW_MINUTES=5` サイクル内（ADR 008 定義） |
+| CloudFront fallback 配信確認 | 5xx に対し fallback が返ること | CloudFront `5xxErrorRate` vs `TotalErrorRate` の乖離で検証 |
+
+**Phase B — TTR（FAULT_RATE 除去時点から計測）**
+
+| メトリクス | 閾値 | 根拠 |
+|---|---|---|
+| エラーレートがベースライン（≤ 0.5%）に戻るまで | **≤ 2 分** | SLI 計算ウィンドウ（1 分）× 2 サイクル以内 |
 
 ---
 
 ### 5. network_latency
 
-**目標**：service-b に 500ms 注入されても **service-a の観測 P95 ≤ 200ms** を維持する
+**目標**：service-b に 500ms 注入されても service-a の観測 P95 ≤ 200ms を維持し、除去後 90s 以内にベースラインへ回復する
 
 | レイヤー | 実装 | 効果 |
 |---|---|---|
-| ☁️ | Envoy sidecar（service-a Pod に追加） timeout: 200ms | service-b の 500ms レイテンシを 200ms でカット。service-b の実際のレイテンシは変わらない |
-| ☁️ | Envoy circuit breaker（連続 5 回タイムアウトで open） | CB open 後は downstream に転送せず即 503 を返す → P95 → 0ms（fallback） |
-| 🖥️ | stale cache（TTL: 30s）in service-a `/aggregate/{id}` | タイムアウト時は前回の成功レスポンスをキャッシュから返す。**キャッシュヒット時のみ** ≤ 10ms |
+| ☁️ | Envoy sidecar（service-a Pod）timeout: 200ms | service-b の 500ms を 200ms でカット。service-b の実際のレイテンシは変わらない |
+| ☁️ | Envoy circuit breaker（連続 5 回タイムアウトで open） | CB open 後は downstream に転送せず即 fallback → P95 ≤ 10ms |
+| 🖥️ | stale cache（TTL: 30s）in service-a `/aggregate/{id}` | タイムアウト時に前回成功レスポンスを返す。**キャッシュヒット時のみ** ≤ 10ms |
 
-> **注意**: stale cache の P95 ≤ 10ms はキャッシュが温まった後のみ。初回リクエスト・キャッシュ切れ時は Envoy timeout（≤ 200ms）か fallback error になる。service-b の実際のレイテンシは 500ms のまま。service-a の観測レイテンシが改善していることをダッシュボードで可視化することが目的。
+> service-b の実際の P95 は 500ms のまま。service-a の観測 P95 との乖離をダッシュボードで可視化することが目的。stale cache ≤ 10ms はキャッシュヒット時のみ（初回・TTL 切れ後は Envoy timeout ≤ 200ms）。
 
-**合格基準**
+**Phase A — 吸収**
 
-| メトリクス | 閾値 | 計測元 |
+| メトリクス | 閾値 | 根拠 |
 |---|---|---|
-| service-b P95 レイテンシ | ≈ 500ms（障害確認） | ALB `TargetResponseTime` p95 |
-| service-a P95 レイテンシ（Envoy 経由） | ≤ 200ms | EMF カスタムメトリクス `AggregateDurationMs` p95 |
-| circuit breaker 発動後の P95 | ≤ 10ms（fallback 返却） | 同上 |
-| stale cache ヒット時の P95 | ≤ 10ms | 同上 |
+| service-b P95（障害確認） | **≥ 450ms** | LATENCY_MS=500 が正しく機能していること |
+| service-a P95（Envoy 経由） | **≤ 200ms** | Envoy timeout |
+| circuit breaker 発動タイミング | **≤ 30s** | 5 回タイムアウト × 200ms + jitter |
+| CB open 後の service-a P95 | **≤ 10ms** | fallback 即返し |
+
+**Phase B — TTR（LATENCY_MS 除去時点から計測）**
+
+| メトリクス | 閾値 | 根拠 |
+|---|---|---|
+| CB が half-open → closed に遷移するまで | **≤ 60s** | CB recovery timeout（30s）+ 成功リクエスト確認まで |
+| service-a P95 がベースライン（≤ 50ms）に戻るまで | **≤ 90s** | CB close + stale cache TTL 切れ（30s）まで込み |
+
+*安全網*: auto-stopper 不発動
 
 ---
 
 ## 実験評価 Lambda（experiment_evaluator）の設計
 
-### トリガー
+### 合格基準のまとめ（evaluator が参照する定義）
 
-DynamoDB Stream → `status` が `"completed"` または `"stopped"` に変化したとき起動
+| 実験 | Phase A（吸収） | Phase B（TTR） |
+|---|---|---|
+| pod_kill | error_rate ≤ 1% | error_rate → baseline within **60s**、pod_count = 2 within **90s** |
+| cpu_stress | P95 ≤ 1000ms、error_rate ≤ 5%、HPA pods ≥ 2 in 5min | P95 → baseline within **60s** |
+| memory_stress | error_rate ≤ 5%、P95 ≤ 1000ms、OOMKill recovery ≤ 60s | error_rate + memory → baseline within **90s** |
+| http_error_inject | origin error ≥ 30%、auto-stopper ≤ 5min、fallback served | error_rate → baseline within **2min** |
+| network_latency | service-b P95 ≥ 450ms、service-a P95 ≤ 200ms、CB opens ≤ 30s | service-a P95 → baseline within **90s** |
+
+### トリガーと待機
+
+```
+DynamoDB Stream (status → "completed" / "stopped")
+  └→ Lambda 起動
+       └→ MAX(TTR) + 3分（CloudWatch メトリクス遅延バッファ）待機後に評価
+```
+
+最大 TTR は 90s。CloudWatch バッファ 3 分を加えた **約 5 分後** にメトリクスを取得・判定する。
+Lambda のタイムアウトは 10 分に設定する（デフォルト 3 分から変更）。
 
 ### 判定ロジック
 
 ```python
-# 実験タイプごとのチェック項目
-CHECKS = {
-    "pod_kill": [
-        ("error_rate_during_kill", "≤ 0.01"),
-        ("recovery_time_seconds", "≤ 60"),
-        ("auto_stopper_fired", "== False"),
+CRITERIA = {
+    "pod_kill": {
+        "absorption": [
+            Criterion("error_rate_during_fault", op="<=", threshold=0.01,
+                      window="fault_start_at → fault_end_at"),
+        ],
+        "recovery": [
+            Criterion("error_rate", op="<=", threshold=0.005,
+                      ttr_limit_seconds=60, window="fault_end_at → fault_end_at+90s"),
+            Criterion("pod_count", op=">=", threshold=2,
+                      ttr_limit_seconds=90, window="fault_end_at → fault_end_at+120s"),
+        ],
+    },
+    "cpu_stress": {
+        "absorption": [
+            Criterion("p95_latency_ms", op="<=", threshold=1000,
+                      window="fault_start_at → fault_end_at"),
+            Criterion("error_rate",     op="<=", threshold=0.05,
+                      window="fault_start_at → fault_end_at"),
+        ],
+        "recovery": [
+            Criterion("p95_latency_ms", op="<=", threshold=100,
+                      ttr_limit_seconds=60, window="fault_end_at → fault_end_at+120s"),
+        ],
+    },
+    "memory_stress": {
+        "absorption": [
+            Criterion("error_rate",    op="<=", threshold=0.05,
+                      window="fault_start_at → fault_end_at"),
+            Criterion("p95_latency_ms", op="<=", threshold=1000,
+                      window="fault_start_at → fault_end_at"),
+        ],
+        "recovery": [
+            Criterion("error_rate", op="<=", threshold=0.005,
+                      ttr_limit_seconds=90, window="fault_end_at → fault_end_at+150s"),
+            Criterion("memory_rss_mb", op="<=", threshold=100,
+                      ttr_limit_seconds=90, window="fault_end_at → fault_end_at+150s"),
+        ],
+    },
+    "http_error_inject": {
+        "absorption": [
+            Criterion("origin_error_rate",         op=">=", threshold=0.30,
+                      window="fault_start_at → fault_end_at"),
+            Criterion("auto_stopper_latency_s",    op="<=", threshold=300,
+                      window="fault_start_at → fault_end_at"),
+        ],
+        "recovery": [
+            Criterion("error_rate", op="<=", threshold=0.005,
+                      ttr_limit_seconds=120, window="fault_end_at → fault_end_at+180s"),
+        ],
+    },
+    "network_latency": {
+        "absorption": [
+            Criterion("service_b_p95_ms", op=">=", threshold=450,
+                      window="fault_start_at → fault_end_at"),
+            Criterion("service_a_p95_ms", op="<=", threshold=200,
+                      window="fault_start_at → fault_end_at"),
+        ],
+        "recovery": [
+            Criterion("service_a_p95_ms", op="<=", threshold=50,
+                      ttr_limit_seconds=90, window="fault_end_at → fault_end_at+150s"),
+        ],
+    },
+}
+```
+
+### 出力スキーマ（DynamoDB に追記）
+
+```json
+{
+  "experiment_id": "...",
+  "evaluation_result": "pass | fail",
+  "evaluation_details": {
+    "phase_a_absorption": [
+      {"criterion": "error_rate_during_fault", "value": 0.004, "threshold": "<=0.01", "pass": true}
     ],
-    "cpu_stress": [
-        ("p95_latency_ms", "≤ 1000"),
-        ("error_rate", "≤ 0.05"),
-        ("auto_stopper_fired", "== False"),
+    "phase_b_recovery": [
+      {"criterion": "error_rate", "ttr_actual_seconds": 18, "ttr_limit_seconds": 60, "pass": true},
+      {"criterion": "pod_count",  "ttr_actual_seconds": 52, "ttr_limit_seconds": 90, "pass": true}
     ],
-    "memory_stress": [
-        ("p95_latency_ms", "≤ 1000"),
-        ("error_rate", "≤ 0.05"),
-        ("oomkill_recovery_seconds", "≤ 60"),
-        ("auto_stopper_fired", "== False"),
-    ],
-    "http_error_inject": [
-        ("origin_error_rate", "≥ 0.30"),      # 障害確認
-        ("auto_stopper_fired", "== True"),     # 安全装置が機能したこと
-        ("auto_stopper_latency_seconds", "≤ 300"),
-    ],
-    "network_latency": [
-        ("service_b_p95_ms", "≥ 450"),        # 障害確認
-        ("service_a_p95_ms", "≤ 200"),        # Envoy timeout が機能
-        ("auto_stopper_fired", "== False"),
-    ],
+    "safety_net": {
+      "auto_stopper_fired": false,
+      "expected": false,
+      "pass": true
+    }
+  },
+  "evaluated_at": "2026-05-14T..."
 }
 ```
 
