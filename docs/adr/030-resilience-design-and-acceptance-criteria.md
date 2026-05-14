@@ -22,6 +22,8 @@ ADR 005〜009 は各実験の「合格基準（数値）」を定義したが、
 3. 実験完了後に PASS/FAIL を自動判定する Lambda（`experiment_evaluator`）を追加する
 4. `sli_calculator.py` の SERVICES を service-a まで拡張し auto_stopper との不一致を解消する
 
+> **設計の立ち位置**：本 ADR が目指すのは「障害を完全に隠す」ことではなく、「障害注入中の影響を定量的に抑制し、障害除去後の回復時間を計測可能にする」こと。fail rate が下がり、TTR が短くなることをメトリクスで証明する。
+
 ## Rationale
 
 ### fail fast と degrade gracefully を分担する理由
@@ -167,7 +169,7 @@ OOMKill は「吸収できた」ではなく「Pod 内に隔離し自動復旧�
 |---|---|---|
 | auto-stopper が注入を停止するまで | **≤ 5 分** | `WINDOW_MINUTES=5` サイクル内（ADR 008 定義）。障害を放置しないガードレール |
 | origin エラーレート（障害確認） | **≥ 30%** | FAULT_RATE=0.5 が正しく機能していること（origin 5xx は監視継続） |
-| ユーザー向けエラーレート（fallback 有効時） | **CloudFront が 503 fallback を返すこと** | origin 5xx とユーザー体験を分離。origin の 5xxErrorRate は高いが CloudFront TotalErrorRate との乖離が証拠 |
+| ユーザー向けエラー体験の改善（fallback 有効時） | **CloudFront が branded 503 fallback を返すこと** | origin 5xx はそのまま ALB / CloudWatch に上昇する。503 を維持するため CloudFront `TotalErrorRate` は下がらない。改善されるのは "raw 5xx をそのまま見せない" 体験であり、origin `5xxErrorRate` と CloudFront `TotalErrorRate` の乖離が証拠 |
 
 **Phase B — Recover / TTR（FAULT_RATE 除去時点から計測）**
 
@@ -184,7 +186,8 @@ OOMKill は「吸収できた」ではなく「Pod 内に隔離し自動復旧�
 | レイヤー | 実装 | 効果 |
 |---|---|---|
 | ☁️ | Envoy sidecar（service-a Pod）timeout: 200ms | service-b の 500ms を timeout 近辺でカット。service-b の実際のレイテンシは変わらない |
-| ☁️ | Envoy circuit breaker（連続 5 回タイムアウトで open） | CB open 後は downstream に転送せず即 fallback → P95 ≤ 10ms |
+| ☁️ | Envoy **outlier detection**（連続 timeout / 5xx 検知で service-b endpoint を一時 eject） | 連続タイムアウト後に service-b Pod を upstream pool から外し、即 fallback。「連続失敗で upstream を切り離す」挙動 |
+| ☁️ | Envoy **circuit breaker**（pending request / connection / retry の上限設定） | 過負荷時に upstream への接続を積み上げず fail fast。outlier detection と組み合わせて多層防御 |
 | 🖥️ | stale cache（TTL: 30s）in service-a `/aggregate/{id}` | タイムアウト時に前回成功レスポンスを返す。**キャッシュヒット時のみ** ≤ 10ms |
 
 > service-b の実際の P95 は 500ms のまま。service-a の観測 P95 との乖離をダッシュボードで可視化することが目的。stale cache ≤ 10ms はキャッシュヒット時のみ（初回・TTL 切れ後は Envoy timeout 付近）。
@@ -196,14 +199,14 @@ OOMKill は「吸収できた」ではなく「Pod 内に隔離し自動復旧�
 |---|---|---|
 | service-b P95（障害確認） | **≥ 450ms** | LATENCY_MS=500 が正しく機能していること |
 | service-a P95（Envoy 経由） | **≤ 250ms** | Envoy timeout 200ms + プロキシ・ランタイムオーバーヘッド許容 |
-| circuit breaker 発動タイミング | **≤ 30s** | 5 回タイムアウト × 200ms + jitter |
-| CB open 後の service-a P95 | **≤ 10ms** | fallback 即返し |
+| outlier detection による eject 発動 | **≤ 30s** | 連続 5 回 timeout 検知（5 × 200ms + jitter） |
+| eject 後の service-a P95 | **≤ 10ms** | fallback 即返し |
 
 **Phase B — Recover / TTR（LATENCY_MS 除去時点から計測）**
 
 | メトリクス | 閾値 | 根拠 |
 |---|---|---|
-| CB が half-open → closed に遷移するまで | **≤ 60s** | CB recovery timeout（30s）+ 成功リクエスト確認まで |
+| outlier detection が eject → 復帰するまで | **≤ 60s** | eject timeout（30s）+ 成功リクエスト確認まで |
 | service-a P95 がベースライン（≤ 50ms）に戻るまで | **≤ 90s** | CB close + stale cache TTL 切れ（30s）まで込み |
 
 *安全網*: auto-stopper 不発動
@@ -232,6 +235,15 @@ DynamoDB Stream (status → "completed" / "stopped")
 
 最大 TTR は 90s。CloudWatch バッファ 3 分を加えた **約 5 分後** にメトリクスを取得・判定する。
 Lambda のタイムアウトは 10 分に設定する（デフォルト 3 分から変更）。
+
+> **本番設計メモ（ポートフォリオスコープでは Lambda timeout で代替）**：待機で Lambda を占有する代わりに `DynamoDB Stream → scheduler Lambda → EventBridge Scheduler（5 分後）→ evaluator Lambda` の非同期パターンが望ましい。Lambda コールドスタートが分離され、コスト・スケーラビリティいずれも改善する。
+
+### status = stopped の扱い
+
+| status | 実験 | 評価方針 |
+|---|---|---|
+| `stopped` | `http_error_inject` | **auto-stopper 発動が合格条件**。SLO 違反の検知 → 自動停止のパイプライン動作検証が目的のため、`stopped` = Phase A の safety_net `pass: true` |
+| `stopped` | それ以外 | 原則 **fail**（auto-stopper が不発動であることが合格条件）。`safety_net.pass = false` として記録 |
 
 ### 判定ロジック
 
@@ -335,9 +347,12 @@ CRITERIA = {
 現状: エラーレートのみ収集、service-b のみ対象
 
 追加:
-- **ALB `TargetResponseTime` の P95** を `get_metric_statistics` の ExtendedStatistics で収集
+- **service-a P95（EMF `AggregateDurationMs`）** を収集。service-a は Envoy sidecar 経由の呼び出しなので EMF が正確なソース
+- **service-b P95**：service-a → service-b は Kubernetes 内部通信（ClusterIP）のため ALB `TargetResponseTime` には反映されない。service-b EMF `ResponseTimeMs` または Envoy `upstream_rq_time` を使う
 - **SERVICES を service-a まで拡張**（auto_stopper.py との不一致解消）
 - DynamoDB SLI テーブルに `latency_p95_ms` カラムを追加
+
+> ALB `TargetResponseTime` は外部（chaos-agent → ALB → service-b）のレイテンシを計測する用途では有効。service-a 経由の内部呼び出しパスは別途 EMF か Envoy metrics で計測する。
 
 ---
 
@@ -345,7 +360,7 @@ CRITERIA = {
 
 | パネル | メトリクス | 目的 |
 |---|---|---|
-| service-b P95 | ALB `TargetResponseTime` p95 | 注入された障害の確認 |
+| service-b P95 | service-b EMF `ResponseTimeMs` p95 または Envoy `upstream_rq_time` | 注入された障害の確認（service-a → service-b は内部通信のため ALB `TargetResponseTime` には反映されない） |
 | service-a P95 | EMF `AggregateDurationMs` p95 | Envoy/cache による軽減の確認 |
 | 5xx error rate | ALB `HTTPCode_Target_5XX_Count / RequestCount` | SLO 違反の監視 |
 | fallback count | service-a EMF `FallbackCount` | degrade gracefully の実績 |
