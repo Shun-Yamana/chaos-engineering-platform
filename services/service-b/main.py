@@ -99,6 +99,34 @@ async def get_item(item_id: int):
     return {"item_id": item_id, "upstream": data, "service": "service-b"}
 
 
+@app.get("/data/{item_id}")
+async def get_data(item_id: int):
+    """service-a /aggregate から呼ばれる専用エンドポイント。service-a を再呼び出しせず循環を回避する。"""
+    ms = _latency_ms()
+    if ms > 0:
+        await asyncio.sleep(ms / 1000)
+
+    start_t = time.monotonic()
+    result = {"item_id": item_id, "data": f"data-{item_id}", "service": "service-b"}
+    duration_ms = (time.monotonic() - start_t) * 1000 + ms
+
+    # EMF: service-b のレイテンシを CloudWatch に送る（Envoy upstream_rq_time の代替）
+    emf = {
+        "_aws": {
+            "Timestamp": int(time.time() * 1000),
+            "CloudWatchMetrics": [{
+                "Namespace": "ChaosExperiment",
+                "Dimensions": [["Service"]],
+                "Metrics": [{"Name": "ResponseTimeMs", "Unit": "Milliseconds"}],
+            }],
+        },
+        "Service": "service-b",
+        "ResponseTimeMs": round(duration_ms + ms, 2),
+    }
+    print(json.dumps(emf), flush=True)
+    return result
+
+
 @app.get("/")
 def root():
     return {"service": "service-b", "status": "running"}

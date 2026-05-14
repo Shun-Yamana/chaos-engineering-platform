@@ -86,6 +86,17 @@ resource "aws_cloudfront_distribution" "service_b" {
     response_headers_policy_id = aws_cloudfront_response_headers_policy.security_headers.id
   }
 
+  # http_error_inject 実験: origin 5xx をそのまま見せず branded 503 fallback を返す
+  # 503 を維持するため CloudFront TotalErrorRate は下がらないが、raw 5xx の直接露出を防ぐ
+  dynamic "custom_error_response" {
+    for_each = [502, 503, 504]
+    content {
+      error_code            = custom_error_response.value
+      response_code         = 503
+      error_caching_min_ttl = 5
+    }
+  }
+
   restrictions {
     geo_restriction {
       restriction_type = "none"

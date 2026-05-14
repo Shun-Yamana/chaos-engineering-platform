@@ -24,6 +24,10 @@ resource "aws_dynamodb_table" "experiment_history" {
   table_class                 = "STANDARD_INFREQUENT_ACCESS"
   deletion_protection_enabled = true
 
+  # experiment_evaluator Lambda のトリガー (ADR 030)
+  stream_enabled   = true
+  stream_view_type = "NEW_AND_OLD_IMAGES"
+
   attribute {
     name = "experiment_id"
     type = "S"

@@ -278,3 +278,143 @@ resource "aws_lambda_permission" "auto_stopper_sns" {
   principal     = "sns.amazonaws.com"
   source_arn    = aws_sns_topic.chaos_alerts.arn
 }
+
+# ---------------------------------------------------------------------------
+# experiment_evaluator — DynamoDB Stream トリガー (ADR 030)
+# 実験 completed/stopped 後に 2 フェーズ PASS/FAIL 判定を実行する
+# ---------------------------------------------------------------------------
+
+resource "aws_iam_role" "lambda_experiment_evaluator" {
+  name               = "${var.project_name}-lambda-experiment-evaluator"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+
+  tags = local.common_tags
+}
+
+resource "aws_iam_role_policy_attachment" "evaluator_basic_execution" {
+  role       = aws_iam_role.lambda_experiment_evaluator.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "evaluator_xray" {
+  role       = aws_iam_role.lambda_experiment_evaluator.name
+  policy_arn = "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess"
+}
+
+# DynamoDB Streams の読み取り権限
+resource "aws_iam_role_policy_attachment" "evaluator_dynamodb_stream" {
+  role       = aws_iam_role.lambda_experiment_evaluator.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaDynamoDBExecutionRole"
+}
+
+resource "aws_iam_policy" "lambda_evaluator_policy" {
+  name = "${var.project_name}-lambda-evaluator-policy"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "cloudwatch:GetMetricStatistics",
+          "cloudwatch:ListMetrics",
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:Query",
+        ]
+        Resource = [
+          aws_dynamodb_table.experiment_history.arn,
+        ]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["sqs:SendMessage"]
+        Resource = aws_sqs_queue.lambda_dlq.arn
+      },
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "evaluator_policy" {
+  role       = aws_iam_role.lambda_experiment_evaluator.name
+  policy_arn = aws_iam_policy.lambda_evaluator_policy.arn
+}
+
+data "archive_file" "experiment_evaluator" {
+  type        = "zip"
+  source_file = "${path.module}/../lambda/experiment_evaluator.py"
+  output_path = "${path.module}/../lambda/experiment_evaluator.zip"
+}
+
+resource "aws_lambda_function" "experiment_evaluator" {
+  filename         = data.archive_file.experiment_evaluator.output_path
+  function_name    = "${var.project_name}-experiment-evaluator"
+  role             = aws_iam_role.lambda_experiment_evaluator.arn
+  handler          = "experiment_evaluator.handler"
+  runtime          = "python3.13"
+  source_code_hash = data.archive_file.experiment_evaluator.output_base64sha256
+  # CloudWatch 遅延バッファ 5 分 + 評価処理 = 最大 10 分
+  timeout          = 600
+  memory_size      = 256
+  architectures    = ["arm64"]
+
+  environment {
+    variables = {
+      EXPERIMENT_TABLE   = aws_dynamodb_table.experiment_history.name
+      ALB_ARN_SUFFIX     = data.aws_lb.service_b.arn_suffix
+      CW_BUFFER_SECONDS  = "300"
+    }
+  }
+
+  tracing_config {
+    mode = "Active"
+  }
+
+  dead_letter_config {
+    target_arn = aws_sqs_queue.lambda_dlq.arn
+  }
+
+  logging_config {
+    log_format            = "JSON"
+    application_log_level = "INFO"
+    system_log_level      = "WARN"
+    log_group             = "/aws/lambda/${var.project_name}-experiment-evaluator"
+  }
+
+  tags = local.common_tags
+}
+
+# DynamoDB Stream → experiment_evaluator
+# status = "completed" or "stopped" のアイテム変更のみフィルタリング
+resource "aws_lambda_event_source_mapping" "evaluator_dynamodb_stream" {
+  event_source_arn  = aws_dynamodb_table.experiment_history.stream_arn
+  function_name     = aws_lambda_function.experiment_evaluator.arn
+  starting_position = "LATEST"
+  batch_size        = 1
+
+  filter_criteria {
+    filter {
+      pattern = jsonencode({
+        dynamodb = {
+          NewImage = {
+            status = { S = ["completed", "stopped"] }
+          }
+        }
+      })
+    }
+  }
+
+  destination_config {
+    on_failure {
+      destination_arn = aws_sqs_queue.lambda_dlq.arn
+    }
+  }
+
+  depends_on = [aws_iam_role_policy_attachment.evaluator_dynamodb_stream]
+}

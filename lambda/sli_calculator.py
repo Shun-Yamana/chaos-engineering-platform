@@ -14,18 +14,17 @@ PROJECT_NAME = os.environ["PROJECT_NAME"]
 SLI_TABLE = os.environ["SLI_TABLE"]
 SLO_TABLE = os.environ["SLO_TABLE"]
 WINDOW_MINUTES = int(os.environ.get("WINDOW_MINUTES", "5"))
-# ALB ARN suffix: app/<name>/<hex> — kubectl get ingress で取得後に設定
 ALB_ARN_SUFFIX = os.environ.get("ALB_ARN_SUFFIX", "")
 
-# service-a は ALB を持たず service-b 経由でのみ外部公開される。
-# ALB メトリクスで service-b のエンドツーエンド健全性を監視し、
-# service-a の障害は service-b のエラーレート上昇として観測する。
-SERVICES = ["service-b"]
+# service-a は ALB を持たない（ClusterIP 経由で service-b に呼ばれる）。
+# ALB メトリクスは service-a のエラーも間接的に反映するため、
+# 同じ ALB error_rate を service-a SLI として書き込む（auto_stopper との整合性確保）。
+SERVICES = ["service-a", "service-b"]
 
 
 def get_error_rate(end_time: datetime, window_minutes: int) -> float:
     if not ALB_ARN_SUFFIX:
-        logger.warning("ALB_ARN_SUFFIX not set, skipping metric query")
+        logger.warning("ALB_ARN_SUFFIX not set, skipping error_rate query")
         return 0.0
 
     start_time = end_time - timedelta(minutes=window_minutes)
@@ -53,6 +52,30 @@ def get_error_rate(end_time: datetime, window_minutes: int) -> float:
     return error_count / request_count
 
 
+def get_latency_p95_ms(end_time: datetime, window_minutes: int) -> float | None:
+    """ALB TargetResponseTime p95 を取得する（service-b 経由の end-to-end レイテンシ）。"""
+    if not ALB_ARN_SUFFIX:
+        return None
+
+    start_time = end_time - timedelta(minutes=window_minutes)
+    period = window_minutes * 60
+    dimensions = [{"Name": "LoadBalancer", "Value": ALB_ARN_SUFFIX}]
+
+    resp = cloudwatch.get_metric_statistics(
+        Namespace="AWS/ApplicationELB",
+        MetricName="TargetResponseTime",
+        Dimensions=dimensions,
+        StartTime=start_time,
+        EndTime=end_time,
+        Period=period,
+        ExtendedStatistics=["p95"],
+    )
+    datapoints = resp.get("Datapoints", [])
+    if not datapoints:
+        return None
+    return round(datapoints[0]["ExtendedStatistics"]["p95"] * 1000, 2)  # s → ms
+
+
 def get_slo(service: str) -> dict:
     table = dynamodb.Table(SLO_TABLE)
     resp = table.get_item(Key={"service_name": service})
@@ -71,35 +94,43 @@ def calculate_burn_rate(error_rate: float, slo: dict) -> float:
     return error_rate / error_budget
 
 
-def save_sli(service: str, error_rate: float, burn_rate: float, timestamp: str):
+def save_sli(service: str, error_rate: float, burn_rate: float, timestamp: str,
+             latency_p95_ms: float | None = None):
     table = dynamodb.Table(SLI_TABLE)
     expires_at = int((datetime.now(timezone.utc) + timedelta(days=7)).timestamp())
 
-    table.put_item(Item={
+    item = {
         "service_name": service,
         "timestamp": timestamp,
         "error_rate": str(round(error_rate, 6)),
         "burn_rate": str(round(burn_rate, 6)),
         "expires_at": expires_at,
-    })
+    }
+    if latency_p95_ms is not None:
+        item["latency_p95_ms"] = str(round(latency_p95_ms, 2))
+
+    table.put_item(Item=item)
 
 
 def handler(event, context):
     now = datetime.now(timezone.utc)
     timestamp = now.isoformat()
 
+    error_rate = get_error_rate(now, WINDOW_MINUTES)
+    latency_p95_ms = get_latency_p95_ms(now, WINDOW_MINUTES)
+
     results = []
     for service in SERVICES:
         slo = get_slo(service)
-        error_rate = get_error_rate(now, WINDOW_MINUTES)
         burn_rate = calculate_burn_rate(error_rate, slo)
 
-        save_sli(service, error_rate, burn_rate, timestamp)
+        save_sli(service, error_rate, burn_rate, timestamp, latency_p95_ms)
 
         results.append({
             "service": service,
             "error_rate": error_rate,
             "burn_rate": burn_rate,
+            "latency_p95_ms": latency_p95_ms,
             "error_rate_threshold": float(slo["error_rate_threshold"]),
             "burn_rate_threshold": float(slo["burn_rate_threshold"]),
             "slo_violated": (
@@ -112,6 +143,7 @@ def handler(event, context):
             "service": service,
             "error_rate": error_rate,
             "burn_rate": burn_rate,
+            "latency_p95_ms": latency_p95_ms,
             "timestamp": timestamp,
         }))
 

@@ -79,6 +79,8 @@ spec:
               value: "30"
             - name: ALB_ORIGIN_SECRET
               value: fLORutDU9AqgI2QQl5tbQspmOYRZdSIi
+            - name: SERVICE_A_AGGREGATE_URL
+              value: "http://service-a/aggregate/1"
           resources:
             requests:
               cpu: "64m"

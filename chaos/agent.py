@@ -470,14 +470,24 @@ if __name__ == "__main__":
         if service_b_url:
             logger.info(f"Auto-discovered service-b URL from Ingress: {service_b_url}")
 
+    traffic_interval = int(os.environ.get("TRAFFIC_GEN_INTERVAL", "30"))
+    origin_secret = os.environ.get("ALB_ORIGIN_SECRET", "")
+
     if service_b_url:
-        traffic_interval = int(os.environ.get("TRAFFIC_GEN_INTERVAL", "30"))
-        origin_secret = os.environ.get("ALB_ORIGIN_SECRET", "")
         gen = TrafficGenerator(service_b_url, interval=traffic_interval, origin_secret=origin_secret)
-        t = threading.Thread(target=gen.run_forever, daemon=True, name="traffic-gen")
+        t = threading.Thread(target=gen.run_forever, daemon=True, name="traffic-gen-service-b")
         t.start()
     else:
-        logger.info("SERVICE_B_URL not set, traffic generator disabled")
+        logger.info("SERVICE_B_URL not set, service-b traffic generator disabled")
+
+    # service-a /aggregate — network_latency 実験で Envoy + stale cache の効果を観測するためのトラフィック
+    service_a_aggregate_url = os.environ.get("SERVICE_A_AGGREGATE_URL")
+    if service_a_aggregate_url:
+        gen_a = TrafficGenerator(service_a_aggregate_url, interval=traffic_interval)
+        t_a = threading.Thread(target=gen_a.run_forever, daemon=True, name="traffic-gen-service-a")
+        t_a.start()
+    else:
+        logger.info("SERVICE_A_AGGREGATE_URL not set, service-a traffic generator disabled")
 
     poller = ChaosAgentPoller(chaos_agent, TABLE_NAME, poll_interval=10)
     poller.run_forever()

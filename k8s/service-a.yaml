@@ -32,6 +32,12 @@ spec:
           labelSelector:
             matchLabels:
               app: service-a
+      volumes:
+        - name: envoy-config
+          configMap:
+            name: envoy-service-b-egress
+        - name: envoy-tmp
+          emptyDir: {}
       containers:
         - name: service-a
           image: 203553641035.dkr.ecr.ap-northeast-1.amazonaws.com/chaos-platform/service-a:latest
@@ -40,6 +46,8 @@ spec:
           env:
             - name: FAULT_RATE
               value: "0.0"
+            - name: SERVICE_B_INTERNAL_URL
+              value: "http://localhost:9001"
           lifecycle:
             preStop:
               exec:
@@ -50,6 +58,12 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            failureThreshold: 20
+            periodSeconds: 5
           readinessProbe:
             httpGet:
               path: /health
@@ -65,10 +79,36 @@ spec:
           resources:
             requests:
               cpu: "256m"
-              memory: "512Mi"
+              memory: "128Mi"
             limits:
-              cpu: "512m"
-              memory: "1Gi"
+              cpu: "256m"
+              memory: "256Mi"
+
+        - name: envoy
+          image: envoyproxy/envoy:v1.31.0
+          args: ["--config-path", "/etc/envoy/envoy.yaml", "--disable-hot-restart"]
+          ports:
+            - containerPort: 9001
+              name: proxy
+          securityContext:
+            runAsUser: 101
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: envoy-config
+              mountPath: /etc/envoy
+            - name: envoy-tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "100m"
+              memory: "128Mi"
 ---
 apiVersion: v1
 kind: Service
