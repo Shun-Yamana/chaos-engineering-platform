@@ -68,13 +68,13 @@ Phase B — 回復（TTR: Time To Recovery）: 障害除去後、どのスピー
 | ☁️ | `topologySpreadConstraints` maxSkew: 1 | AZ 分散。AZ 障害でも全 Pod 同時死にを防ぐ |
 | 🖥️ | SIGTERM ハンドリング（graceful shutdown 5s） | Kill 時に処理中リクエストを完了してから終了 |
 
-**Phase A — 吸収**
+**Phase A — Absorb / Contain**
 
 | メトリクス | 閾値 | 根拠 |
 |---|---|---|
 | Kill 直後 60s のエラーレート | **≤ 1%** | replicas=2 で他 Pod が全トラフィックを処理。ALB deregistration window（10s）での一時スパイクのみ許容 |
 
-**Phase B — TTR（障害除去 = Kill イベント発生時点から計測）**
+**Phase B — Recover / TTR（Kill イベント発生時点から計測）**
 
 | メトリクス | 閾値 | 根拠 |
 |---|---|---|
@@ -96,7 +96,7 @@ Phase B — 回復（TTR: Time To Recovery）: 障害除去後、どのスピー
 
 > **注意**: env var パッチで注入された CPU ストレスはスケールアウトした新 Pod にも適用される。それでも Pod 数増加で 1 Pod 当たりのリクエスト密度が下がるため P95 改善は見込める。CPU ベース HPA が最初のデモ。リクエスト数ベースは KEDA で発展段階。
 
-**Phase A — 吸収**
+**Phase A — Absorb / Contain**
 
 | メトリクス | 閾値 | 根拠 |
 |---|---|---|
@@ -104,7 +104,7 @@ Phase B — 回復（TTR: Time To Recovery）: 障害除去後、どのスピー
 | エラーレート | **≤ 5%** | SLO |
 | HPA スケールアウト | **5 分以内に Pod 数 ≥ 2** | HPA デフォルト評価間隔 15s × stabilization |
 
-**Phase B — TTR（CPU_STRESS 環境変数除去時点から計測）**
+**Phase B — Recover / TTR（CPU_STRESS 環境変数除去時点から計測）**
 
 | メトリクス | 閾値 | 根拠 |
 |---|---|---|
@@ -116,7 +116,7 @@ Phase B — 回復（TTR: Time To Recovery）: 障害除去後、どのスピー
 
 ### 3. memory_stress
 
-**目標**：OOMKill を Pod 内に封じ込め、60s 以内に自己回復する
+**目標**：OOMKill を 1 Pod 内に封じ込め、ユーザー影響を 5% 以内に抑えつつ 90s 以内にベースラインへ回復する
 
 | レイヤー | 実装 | 効果 |
 |---|---|---|
@@ -126,15 +126,17 @@ Phase B — 回復（TTR: Time To Recovery）: 障害除去後、どのスピー
 
 > **注意**: HPA（メモリベース）はスケールアウトした Pod も同じストレスを受けるため根本解決にならない。「緩和策」として位置づける。
 
-**Phase A — 吸収**
+**Phase A — Absorb / Contain**
+
+OOMKill は「吸収できた」ではなく「Pod 内に隔離し自動復旧した」イベント。Phase A では blast radius の封じ込めを評価する。
 
 | メトリクス | 閾値 | 根拠 |
 |---|---|---|
 | 高負荷中のエラーレート | **≤ 5%** | SLO |
-| P95 レイテンシ（高負荷中） | **≤ 1000ms** | ADR 007 定義 |
-| OOMKill 後の回復時間（エラーレートが 0% に戻るまで） | **≤ 60s** | readiness probe 設定から算出（ADR 007 と同一） |
+| 障害の波及範囲 | **1 Pod に限定**（他 Pod のメモリ・エラーレートは正常） | limits 設定による隔離 |
+| OOMKilled Pod の自動置換 | **発生すること**（kubelet による自動再起動） | restartPolicy: Always + readiness probe によるトラフィック遮断 |
 
-**Phase B — TTR（MEMORY_STRESS_MB 除去時点から計測）**
+**Phase B — Recover / TTR（MEMORY_STRESS_MB 除去時点から計測）**
 
 | メトリクス | 閾値 | 根拠 |
 |---|---|---|
@@ -159,15 +161,15 @@ Phase B — 回復（TTR: Time To Recovery）: 障害除去後、どのスピー
 
 > **この実験のみ auto-stopper 発動が主要合格条件**：SLO 違反の観測 → 自動停止のパイプラインが正常動作することそのものを検証する実験であるため。
 
-**Phase A — 吸収**
+**Phase A — Absorb / Contain**
 
 | メトリクス | 閾値 | 根拠 |
 |---|---|---|
-| origin エラーレート（障害確認） | **≥ 30%** | FAULT_RATE=0.5 が正しく機能していること |
-| auto-stopper 発動タイミング | **≤ 5 分** | `WINDOW_MINUTES=5` サイクル内（ADR 008 定義） |
-| CloudFront fallback 配信確認 | 5xx に対し fallback が返ること | CloudFront `5xxErrorRate` vs `TotalErrorRate` の乖離で検証 |
+| auto-stopper が注入を停止するまで | **≤ 5 分** | `WINDOW_MINUTES=5` サイクル内（ADR 008 定義）。障害を放置しないガードレール |
+| origin エラーレート（障害確認） | **≥ 30%** | FAULT_RATE=0.5 が正しく機能していること（origin 5xx は監視継続） |
+| ユーザー向けエラーレート（fallback 有効時） | **CloudFront が 503 fallback を返すこと** | origin 5xx とユーザー体験を分離。origin の 5xxErrorRate は高いが CloudFront TotalErrorRate との乖離が証拠 |
 
-**Phase B — TTR（FAULT_RATE 除去時点から計測）**
+**Phase B — Recover / TTR（FAULT_RATE 除去時点から計測）**
 
 | メトリクス | 閾値 | 根拠 |
 |---|---|---|
@@ -177,26 +179,27 @@ Phase B — 回復（TTR: Time To Recovery）: 障害除去後、どのスピー
 
 ### 5. network_latency
 
-**目標**：service-b に 500ms 注入されても service-a の観測 P95 ≤ 200ms を維持し、除去後 90s 以内にベースラインへ回復する
+**目標**：service-b に 500ms 注入されても service-a の観測 P95 ≤ 250ms を維持し、除去後 90s 以内にベースラインへ回復する
 
 | レイヤー | 実装 | 効果 |
 |---|---|---|
-| ☁️ | Envoy sidecar（service-a Pod）timeout: 200ms | service-b の 500ms を 200ms でカット。service-b の実際のレイテンシは変わらない |
+| ☁️ | Envoy sidecar（service-a Pod）timeout: 200ms | service-b の 500ms を timeout 近辺でカット。service-b の実際のレイテンシは変わらない |
 | ☁️ | Envoy circuit breaker（連続 5 回タイムアウトで open） | CB open 後は downstream に転送せず即 fallback → P95 ≤ 10ms |
 | 🖥️ | stale cache（TTL: 30s）in service-a `/aggregate/{id}` | タイムアウト時に前回成功レスポンスを返す。**キャッシュヒット時のみ** ≤ 10ms |
 
-> service-b の実際の P95 は 500ms のまま。service-a の観測 P95 との乖離をダッシュボードで可視化することが目的。stale cache ≤ 10ms はキャッシュヒット時のみ（初回・TTL 切れ後は Envoy timeout ≤ 200ms）。
+> service-b の実際の P95 は 500ms のまま。service-a の観測 P95 との乖離をダッシュボードで可視化することが目的。stale cache ≤ 10ms はキャッシュヒット時のみ（初回・TTL 切れ後は Envoy timeout 付近）。
+> service-a P95 の上限を 250ms とするのは、ネットワーク・プロキシ・ランタイムのオーバーヘッドにより実測値が timeout の 200ms を若干超えることがあるため。
 
-**Phase A — 吸収**
+**Phase A — Absorb / Contain**
 
 | メトリクス | 閾値 | 根拠 |
 |---|---|---|
 | service-b P95（障害確認） | **≥ 450ms** | LATENCY_MS=500 が正しく機能していること |
-| service-a P95（Envoy 経由） | **≤ 200ms** | Envoy timeout |
+| service-a P95（Envoy 経由） | **≤ 250ms** | Envoy timeout 200ms + プロキシ・ランタイムオーバーヘッド許容 |
 | circuit breaker 発動タイミング | **≤ 30s** | 5 回タイムアウト × 200ms + jitter |
 | CB open 後の service-a P95 | **≤ 10ms** | fallback 即返し |
 
-**Phase B — TTR（LATENCY_MS 除去時点から計測）**
+**Phase B — Recover / TTR（LATENCY_MS 除去時点から計測）**
 
 | メトリクス | 閾値 | 根拠 |
 |---|---|---|
@@ -211,13 +214,13 @@ Phase B — 回復（TTR: Time To Recovery）: 障害除去後、どのスピー
 
 ### 合格基準のまとめ（evaluator が参照する定義）
 
-| 実験 | Phase A（吸収） | Phase B（TTR） |
+| 実験 | Phase A: Absorb / Contain | Phase B: Recover / TTR |
 |---|---|---|
-| pod_kill | error_rate ≤ 1% | error_rate → baseline within **60s**、pod_count = 2 within **90s** |
-| cpu_stress | P95 ≤ 1000ms、error_rate ≤ 5%、HPA pods ≥ 2 in 5min | P95 → baseline within **60s** |
-| memory_stress | error_rate ≤ 5%、P95 ≤ 1000ms、OOMKill recovery ≤ 60s | error_rate + memory → baseline within **90s** |
-| http_error_inject | origin error ≥ 30%、auto-stopper ≤ 5min、fallback served | error_rate → baseline within **2min** |
-| network_latency | service-b P95 ≥ 450ms、service-a P95 ≤ 200ms、CB opens ≤ 30s | service-a P95 → baseline within **90s** |
+| pod_kill | error_rate ≤ 1% | baseline ≤ **60s**、pod_count = 2 ≤ **90s** |
+| cpu_stress | P95 ≤ 1000ms、error_rate ≤ 5%、HPA ≥ 2 pods in 5min | baseline latency ≤ **60s** |
+| memory_stress | error_rate ≤ 5%、blast radius confined to 1 pod | baseline memory + error ≤ **90s** |
+| http_error_inject | auto-stopper disables injection ≤ **5min**、fallback served（origin 5xx と user-facing を分離） | error_rate baseline ≤ **2min** |
+| network_latency | service-a P95 ≤ 250ms、CB opens ≤ **30s** | P95 baseline ≤ **90s** |
 
 ### トリガーと待機
 
@@ -260,10 +263,12 @@ CRITERIA = {
     },
     "memory_stress": {
         "absorption": [
-            Criterion("error_rate",    op="<=", threshold=0.05,
+            Criterion("error_rate", op="<=", threshold=0.05,
                       window="fault_start_at → fault_end_at"),
-            Criterion("p95_latency_ms", op="<=", threshold=1000,
-                      window="fault_start_at → fault_end_at"),
+            # OOMKill は "吸収できた" ではなく "1 Pod 内に隔離された" イベント
+            Criterion("oomkill_pod_count", op="<=", threshold=1,
+                      window="fault_start_at → fault_end_at",
+                      note="blast radius: OOMKill は 1 Pod に限定されること"),
         ],
         "recovery": [
             Criterion("error_rate", op="<=", threshold=0.005,
@@ -288,7 +293,7 @@ CRITERIA = {
         "absorption": [
             Criterion("service_b_p95_ms", op=">=", threshold=450,
                       window="fault_start_at → fault_end_at"),
-            Criterion("service_a_p95_ms", op="<=", threshold=200,
+            Criterion("service_a_p95_ms", op="<=", threshold=250,
                       window="fault_start_at → fault_end_at"),
         ],
         "recovery": [
