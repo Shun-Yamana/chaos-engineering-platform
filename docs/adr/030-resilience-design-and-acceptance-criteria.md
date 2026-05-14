@@ -39,8 +39,8 @@ ADR 005〜009 は各実験の「合格基準（数値）」を定義したが、
 auto-stopper は SLO 違反時の **安全装置**（緊急停止）であり、レジリエンスの品質を測るものではない。合格基準は以下の 2 フェーズで評価する。
 
 ```
-Phase A — 吸収（Absorption）: 障害注入中、SLO を守り続けられたか
-Phase B — 回復（TTR: Time To Recovery）: 障害除去後、どのスピードでベースラインに戻ったか
+Phase A — Absorb / Contain : 障害注入中、ユーザー影響をどこまで抑えられるか
+Phase B — Recover / TTR   : 障害除去後、何秒で正常ベースラインへ戻るか
 ```
 
 **ベースライン定義**（実験開始前 5 分間の平均値で測定）
@@ -323,24 +323,6 @@ CRITERIA = {
       "expected": false,
       "pass": true
     }
-  },
-  "evaluated_at": "2026-05-14T..."
-}
-```
-
-### 出力スキーマ（DynamoDB に追記）
-
-```json
-{
-  "experiment_id": "...",
-  "evaluation_result": "pass | fail",
-  "evaluation_details": {
-    "error_rate": 0.004,
-    "p95_latency_ms": 180,
-    "auto_stopper_fired": false,
-    "checks": [
-      {"name": "error_rate_during_kill", "value": 0.004, "threshold": "≤ 0.01", "pass": true}
-    ]
   },
   "evaluated_at": "2026-05-14T..."
 }
