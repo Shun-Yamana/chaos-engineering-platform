@@ -74,7 +74,7 @@ spec:
             - name: AWS_REGION
               value: ap-northeast-1
             - name: SERVICE_B_URL
-              value: http://k8s-default-serviceb-64e7c32426-905985252.ap-northeast-1.elb.amazonaws.com/items/1
+              value: http://k8s-default-serviceb-64e7c32426-192527324.ap-northeast-1.elb.amazonaws.com/items/1
             - name: TRAFFIC_GEN_INTERVAL
               value: "30"
             - name: ALB_ORIGIN_SECRET
