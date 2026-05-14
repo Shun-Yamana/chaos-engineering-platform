@@ -11,6 +11,9 @@ metadata:
     alb.ingress.kubernetes.io/scheme: internet-facing
     alb.ingress.kubernetes.io/target-type: ip
 
+    # ALB に固定タグを付与することで data "aws_lb" がタグ検索で一意に特定できる
+    alb.ingress.kubernetes.io/tags: "Project=chaos-platform,Component=service-b-alb"
+
     # ALB 本体属性
     alb.ingress.kubernetes.io/load-balancer-attributes: "access_logs.s3.enabled=true,access_logs.s3.bucket=${alb_logs_bucket},access_logs.s3.prefix=service-b,connection_logs.s3.enabled=true,connection_logs.s3.bucket=${alb_logs_bucket},connection_logs.s3.prefix=service-b,routing.http.drop_invalid_header_fields.enabled=true"
 

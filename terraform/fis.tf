@@ -45,20 +45,9 @@ resource "aws_fis_experiment_template" "network_latency" {
   description = "Network latency injection for ${each.key} (aws:eks:pod-network-latency)"
   role_arn    = aws_iam_role.fis_execution.arn
 
-  # alb_arn_suffix が設定済みなら CloudWatch Alarm で直接停止、未設定なら duration 完了まで継続
-  dynamic "stop_condition" {
-    for_each = local.alb_alarms_enabled ? [] : [1]
-    content {
-      source = "none"
-    }
-  }
-
-  dynamic "stop_condition" {
-    for_each = local.alb_alarms_enabled ? [aws_cloudwatch_metric_alarm.service_b_5xx_rate[0].arn] : []
-    content {
-      source = "aws:cloudwatch:alarm"
-      value  = stop_condition.value
-    }
+  stop_condition {
+    source = "aws:cloudwatch:alarm"
+    value  = aws_cloudwatch_metric_alarm.service_b_5xx_rate[0].arn
   }
 
   target {

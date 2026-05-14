@@ -37,14 +37,9 @@ resource "aws_cloudfront_response_headers_policy" "security_headers" {
   }
 }
 
-variable "alb_dns_name" {
-  description = "ALB DNS name created by AWS Load Balancer Controller (set after kubectl apply -f k8s/ingress.yaml)"
-  type        = string
-  default     = ""
-}
-
 locals {
-  cloudfront_enabled = var.alb_dns_name != ""
+  # ALB は data.aws_lb.service_b で常に自動検出されるため常に有効
+  cloudfront_enabled = true
 }
 
 resource "random_password" "cloudfront_origin_secret" {
@@ -53,7 +48,7 @@ resource "random_password" "cloudfront_origin_secret" {
 }
 
 resource "aws_cloudfront_distribution" "service_b" {
-  count = local.cloudfront_enabled ? 1 : 0
+  count = 1
 
   enabled         = true
   is_ipv6_enabled = true
@@ -62,7 +57,7 @@ resource "aws_cloudfront_distribution" "service_b" {
   comment         = "${var.project_name} service-b"
 
   origin {
-    domain_name = var.alb_dns_name
+    domain_name = data.aws_lb.service_b.dns_name
     origin_id   = "alb-service-b"
 
     custom_origin_config {
@@ -106,7 +101,7 @@ resource "aws_cloudfront_distribution" "service_b" {
 
 output "cloudfront_domain_name" {
   description = "CloudFront distribution domain name"
-  value       = local.cloudfront_enabled ? aws_cloudfront_distribution.service_b[0].domain_name : "ALB not yet created — set alb_dns_name and re-apply"
+  value       = aws_cloudfront_distribution.service_b[0].domain_name
 }
 
 output "alb_logs_bucket" {

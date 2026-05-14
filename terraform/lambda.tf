@@ -101,7 +101,7 @@ resource "aws_lambda_function" "sli_calculator" {
       SLI_TABLE      = aws_dynamodb_table.sli_metrics.name
       SLO_TABLE      = aws_dynamodb_table.slo_definitions.name
       WINDOW_MINUTES = "1"
-      ALB_ARN_SUFFIX = var.alb_arn_suffix
+      ALB_ARN_SUFFIX = data.aws_lb.service_b.arn_suffix
     }
   }
 

@@ -19,13 +19,20 @@ module "eks" {
 # 削除しないと Pending のまま DEGRADED になる（EKS Fargate の既知制約）
 # addon 作成より先に patch することで ACTIVE になる
 resource "null_resource" "patch_coredns_fargate" {
+  # cluster_endpoint にはクラスター固有ハッシュが含まれるため、
+  # destroy+apply でクラスターが再作成されると必ずトリガーされる
   triggers = {
-    cluster_name = module.eks.cluster_name
+    cluster_endpoint = module.eks.cluster_endpoint
   }
 
   provisioner "local-exec" {
     command = <<-EOT
       aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.aws_region}
+      echo "Waiting for coredns deployment to appear..."
+      until kubectl get deployment coredns -n kube-system >/dev/null 2>&1; do
+        echo "coredns deployment not yet available, retrying in 15s..."
+        sleep 15
+      done
       kubectl patch deployment coredns -n kube-system --type json \
         -p '[{"op":"remove","path":"/spec/template/metadata/annotations/eks.amazonaws.com~1compute-type"}]' || true
       kubectl rollout status deployment/coredns -n kube-system --timeout=300s || true
@@ -120,10 +127,32 @@ resource "null_resource" "apply_ingress" {
     command = <<-EOT
       aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.aws_region}
       kubectl apply -f ${path.module}/../k8s/ingress.yaml
+      echo "Waiting for ALB to be provisioned..."
+      until kubectl get ingress service-b -n default -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null | grep -q amazonaws; do
+        echo "ALB not yet ready, waiting 15s..."
+        sleep 15
+      done
+      ALB_DNS=$(kubectl get ingress service-b -n default -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+      echo "ALB provisioned: $ALB_DNS"
+      kubectl set env deployment/chaos-agent -n chaos SERVICE_B_URL="http://$ALB_DNS/items/1" || true
     EOT
   }
 
   depends_on = [module.eks, local_file.ingress_yaml]
+}
+
+# ---------------------------------------------------------------------------
+# ALB 自動検出 — インジケーターで付与したタグで一意に特定する
+# apply_ingress が ALB プロビジョニングを待機してから読み取る
+# ---------------------------------------------------------------------------
+
+data "aws_lb" "service_b" {
+  tags = {
+    Project   = "chaos-platform"
+    Component = "service-b-alb"
+  }
+
+  depends_on = [null_resource.apply_ingress]
 }
 
 # ---------------------------------------------------------------------------

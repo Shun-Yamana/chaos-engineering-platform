@@ -444,11 +444,32 @@ class TrafficGenerator:
             time.sleep(self._interval)
 
 
+def _discover_service_b_url(core_v1) -> str | None:
+    """Ingress の ALB ホスト名から service-b URL を自動検出する。SERVICE_B_URL 未設定時のフォールバック。"""
+    try:
+        ingress = core_v1.read_namespaced_ingress(name="service-b", namespace="default")
+        lb = ingress.status.load_balancer
+        if lb and lb.ingress:
+            hostname = lb.ingress[0].hostname
+            if hostname:
+                return f"http://{hostname}/items/1"
+    except Exception as e:
+        logger.warning(f"Ingress-based service-b discovery failed: {e}")
+    return None
+
+
 if __name__ == "__main__":
     if not TABLE_NAME:
         raise RuntimeError("TABLE_NAME environment variable is required")
 
+    chaos_agent = ChaosAgent()
+
     service_b_url = os.environ.get("SERVICE_B_URL")
+    if not service_b_url:
+        service_b_url = _discover_service_b_url(chaos_agent.core_v1)
+        if service_b_url:
+            logger.info(f"Auto-discovered service-b URL from Ingress: {service_b_url}")
+
     if service_b_url:
         traffic_interval = int(os.environ.get("TRAFFIC_GEN_INTERVAL", "30"))
         origin_secret = os.environ.get("ALB_ORIGIN_SECRET", "")
@@ -458,6 +479,5 @@ if __name__ == "__main__":
     else:
         logger.info("SERVICE_B_URL not set, traffic generator disabled")
 
-    chaos_agent = ChaosAgent()
     poller = ChaosAgentPoller(chaos_agent, TABLE_NAME, poll_interval=10)
     poller.run_forever()

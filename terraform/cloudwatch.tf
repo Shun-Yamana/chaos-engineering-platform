@@ -65,7 +65,7 @@ locals {
         title   = "service-b 5xx Error Count"
         view    = "timeSeries"
         region  = var.aws_region
-        metrics = [["AWS/ApplicationELB", "HTTPCode_Target_5XX_Count", "LoadBalancer", var.alb_arn_suffix, { stat = "Sum", period = 60 }]]
+        metrics = [["AWS/ApplicationELB", "HTTPCode_Target_5XX_Count", "LoadBalancer", data.aws_lb.service_b.arn_suffix, { stat = "Sum", period = 60 }]]
         yAxis   = { left = { min = 0 } }
       }
     },
@@ -79,7 +79,7 @@ locals {
         title   = "service-b P95 Latency (s)"
         view    = "timeSeries"
         region  = var.aws_region
-        metrics = [["AWS/ApplicationELB", "TargetResponseTime", "LoadBalancer", var.alb_arn_suffix, { stat = "p95", period = 60 }]]
+        metrics = [["AWS/ApplicationELB", "TargetResponseTime", "LoadBalancer", data.aws_lb.service_b.arn_suffix, { stat = "p95", period = 60 }]]
         yAxis   = { left = { min = 0 } }
       }
     },
@@ -93,7 +93,7 @@ locals {
         title   = "Healthy Hosts"
         view    = "timeSeries"
         region  = var.aws_region
-        metrics = [["AWS/ApplicationELB", "HealthyHostCount", "LoadBalancer", var.alb_arn_suffix, { stat = "Average", period = 60 }]]
+        metrics = [["AWS/ApplicationELB", "HealthyHostCount", "LoadBalancer", data.aws_lb.service_b.arn_suffix, { stat = "Average", period = 60 }]]
         yAxis   = { left = { min = 0 } }
       }
     },
@@ -170,16 +170,17 @@ resource "aws_cloudwatch_dashboard" "chaos_experiment" {
 
 # ---------------------------------------------------------------------------
 # CloudWatch Alarms (ADR 012: CloudWatch Alarm 設計)
-# ALB メトリクスは ALB が作成された後に有効になる (var.alb_arn_suffix が必要)
+# ALB メトリクスは ALB が作成された後に有効になる (data.aws_lb.service_b.arn_suffix が必要)
 # ---------------------------------------------------------------------------
 
 locals {
-  alb_alarms_enabled = var.alb_arn_suffix != ""
+  # ALB は null_resource.apply_ingress + data.aws_lb.service_b で常に自動検出される
+  alb_alarms_enabled = true
 }
 
 # ① service-b 5xx エラーレート > 5% (ADR 005-009 共通閾値)
 resource "aws_cloudwatch_metric_alarm" "service_b_5xx_rate" {
-  count = local.alb_alarms_enabled ? 1 : 0
+  count = 1
 
   alarm_name          = "${var.project_name}-service-b-5xx-rate"
   alarm_description   = "service-b 5xx error rate exceeded 5% (SLO threshold)"
@@ -202,7 +203,7 @@ resource "aws_cloudwatch_metric_alarm" "service_b_5xx_rate" {
       period      = 60
       stat        = "Sum"
       dimensions = {
-        LoadBalancer = var.alb_arn_suffix
+        LoadBalancer = data.aws_lb.service_b.arn_suffix
       }
     }
   }
@@ -215,7 +216,7 @@ resource "aws_cloudwatch_metric_alarm" "service_b_5xx_rate" {
       period      = 60
       stat        = "Sum"
       dimensions = {
-        LoadBalancer = var.alb_arn_suffix
+        LoadBalancer = data.aws_lb.service_b.arn_suffix
       }
     }
   }
@@ -227,7 +228,7 @@ resource "aws_cloudwatch_metric_alarm" "service_b_5xx_rate" {
 
 # ② レイテンシ P95 > 1000ms (ADR 006, 007, 009)
 resource "aws_cloudwatch_metric_alarm" "service_b_latency_p95" {
-  count = local.alb_alarms_enabled ? 1 : 0
+  count = 1
 
   alarm_name          = "${var.project_name}-service-b-latency-p95"
   alarm_description   = "service-b P95 latency exceeded 1000ms"
@@ -240,7 +241,7 @@ resource "aws_cloudwatch_metric_alarm" "service_b_latency_p95" {
   period      = 60
   extended_statistic = "p95"
   dimensions = {
-    LoadBalancer = var.alb_arn_suffix
+    LoadBalancer = data.aws_lb.service_b.arn_suffix
   }
 
   alarm_actions = [aws_sns_topic.chaos_alerts.arn]
