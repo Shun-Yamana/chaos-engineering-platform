@@ -7,9 +7,14 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [react(), tailwindcss()],
     server: {
-      proxy: env.VITE_DEV_API_URL
-        ? { '/experiments': { target: env.VITE_DEV_API_URL, changeOrigin: true } }
-        : undefined,
+      proxy: {
+        ...(env.VITE_DEV_API_URL
+          ? { '/experiments': { target: env.VITE_DEV_API_URL, changeOrigin: true } }
+          : {}),
+        ...(env.VITE_DEV_SERVICE_A_URL
+          ? { '/aggregate': { target: env.VITE_DEV_SERVICE_A_URL, changeOrigin: true } }
+          : {}),
+      },
     },
   }
 })

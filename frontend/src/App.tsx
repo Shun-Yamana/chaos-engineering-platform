@@ -2,6 +2,7 @@ import { useState, useEffect } from "react"
 import { ExperimentList } from "./components/ExperimentList"
 import { ExperimentForm } from "./components/ExperimentForm"
 import { ExperimentDetail } from "./components/ExperimentDetail"
+import { ProductDetailView } from "./components/ProductDetailView"
 import { LoginPage } from "./components/LoginPage"
 import { handleCallback, isAuthenticated, signOut } from "./auth"
 
@@ -9,6 +10,7 @@ type View =
   | { type: "list" }
   | { type: "new" }
   | { type: "detail"; id: string }
+  | { type: "live" }
 
 export default function App() {
   const [authed, setAuthed] = useState(false)
@@ -52,14 +54,26 @@ export default function App() {
         </button>
 
         <nav className="flex items-center gap-1">
-          {view.type !== "list" && (
-            <button
-              onClick={() => setView({ type: "list" })}
-              className="text-xs text-slate-400 hover:text-white px-3 py-1.5 rounded-md hover:bg-slate-800 transition-colors"
-            >
-              ← Experiments
-            </button>
-          )}
+          <button
+            onClick={() => setView({ type: "live" })}
+            className={`text-xs px-3 py-1.5 rounded-md transition-colors ${
+              view.type === "live"
+                ? "text-white bg-slate-700"
+                : "text-slate-400 hover:text-white hover:bg-slate-800"
+            }`}
+          >
+            Demo
+          </button>
+          <button
+            onClick={() => { setView({ type: "list" }); refresh() }}
+            className={`text-xs px-3 py-1.5 rounded-md transition-colors ${
+              view.type !== "live"
+                ? "text-white bg-slate-700"
+                : "text-slate-400 hover:text-white hover:bg-slate-800"
+            }`}
+          >
+            Experiments
+          </button>
           <button
             onClick={signOut}
             className="text-xs text-slate-400 hover:text-white px-3 py-1.5 rounded-md hover:bg-slate-800 transition-colors"
@@ -70,6 +84,7 @@ export default function App() {
       </header>
 
       <main className="flex-1 w-full max-w-4xl mx-auto px-4 sm:px-6 py-6">
+        {view.type === "live" && <ProductDetailView />}
         {view.type === "list" && (
           <ExperimentList
             refreshKey={refreshKey}

@@ -22,6 +22,103 @@ _STALE_CACHE_TTL_S = 30.0
 # {item_id: (response_dict, timestamp)}
 _stale_cache: dict[int, tuple[dict, float]] = {}
 
+# ---------------------------------------------------------------------------
+# Product aggregate — circuit breaker + stale cache
+# ---------------------------------------------------------------------------
+_PRODUCT_TIMEOUT_S = 0.2   # 200ms: tight enough to show latency injection effect
+_PRODUCT_CACHE_TTL_S = 30.0
+
+
+class _CircuitBreaker:
+    _FAIL_THRESH = 5
+    _HALF_OPEN_S = 30.0
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._state = "closed"
+        self._failures = 0
+        self._opened_at = 0.0
+
+    def allow_request(self) -> bool:
+        with self._lock:
+            if self._state == "closed":
+                return True
+            if self._state == "open":
+                if monotonic() - self._opened_at >= self._HALF_OPEN_S:
+                    self._state = "half_open"
+                    return True
+                return False
+            return True  # half_open: allow one probe
+
+    def record_success(self):
+        with self._lock:
+            self._failures = 0
+            self._state = "closed"
+
+    def record_failure(self):
+        with self._lock:
+            self._failures += 1
+            if self._failures >= self._FAIL_THRESH:
+                if self._state != "open":
+                    self._opened_at = monotonic()
+                self._state = "open"
+
+    @property
+    def state(self) -> str:
+        with self._lock:
+            if self._state == "open" and monotonic() - self._opened_at >= self._HALF_OPEN_S:
+                return "half_open"
+            return self._state
+
+
+_product_cb = _CircuitBreaker()
+_product_cache: dict[str, tuple[dict, float]] = {}
+
+
+def _fallback_product(product_id: str) -> dict:
+    return {
+        "product_id": product_id,
+        "name": "商品情報を一時的に取得できません",
+        "price": None,
+        "stock": None,
+        "rating": None,
+        "review_count": None,
+        "review_summary": "現在、商品詳細サービスが混雑しています。",
+        "recommendation_reason": "しばらくしてから再度お試しください。",
+        "updated_at": None,
+    }
+
+
+def _emit_product_aggregate_emf(
+    a_ms: float,
+    b_ms: float | None,
+    source: str,
+    circuit_state: str,
+):
+    emf = {
+        "_aws": {
+            "Timestamp": int(time.time() * 1000),
+            "CloudWatchMetrics": [{
+                "Namespace": "ChaosExperiment",
+                "Dimensions": [["Service"]],
+                "Metrics": [
+                    {"Name": "AggregateDurationMs",   "Unit": "Milliseconds"},
+                    {"Name": "ServiceBCallDurationMs", "Unit": "Milliseconds"},
+                    {"Name": "FallbackCount",          "Unit": "Count"},
+                    {"Name": "StaleCacheHitCount",     "Unit": "Count"},
+                    {"Name": "CircuitBreakerState",    "Unit": "None"},
+                ],
+            }],
+        },
+        "Service": "service-a",
+        "AggregateDurationMs": round(a_ms, 2),
+        "ServiceBCallDurationMs": round(b_ms, 2) if b_ms is not None else 0,
+        "FallbackCount": 1 if source == "fallback" else 0,
+        "StaleCacheHitCount": 1 if source == "stale_cache" else 0,
+        "CircuitBreakerState": 0 if circuit_state == "closed" else 1,
+    }
+    print(json.dumps(emf), flush=True)
+
 
 def _fault_rate() -> float:
     try:
@@ -181,6 +278,81 @@ async def aggregate(item_id: int):
     duration_ms = (monotonic() - start) * 1000
     _emit_aggregate_emf(duration_ms, fallback=False, circuit_open=circuit_open)
     raise HTTPException(status_code=502, detail="service-b unavailable and no stale cache")
+
+
+@app.get("/aggregate/products/{product_id}")
+async def aggregate_product(product_id: str):
+    """service-b の /products/{product_id} を呼び出し、resilience metadata を付与して返す。"""
+    t0 = monotonic()
+    circuit_state = _product_cb.state
+    b_latency_ms: float | None = None
+
+    if _product_cb.allow_request():
+        b_t0 = monotonic()
+        try:
+            async with httpx.AsyncClient(timeout=_PRODUCT_TIMEOUT_S) as client:
+                resp = await client.get(f"{SERVICE_B_INTERNAL_URL}/products/{product_id}")
+                resp.raise_for_status()
+                product = resp.json()
+
+            b_latency_ms = (monotonic() - b_t0) * 1000
+            _product_cb.record_success()
+            circuit_state = _product_cb.state
+            _product_cache[product_id] = (product, monotonic())
+
+            a_ms = (monotonic() - t0) * 1000
+            _emit_product_aggregate_emf(a_ms, b_latency_ms, "fresh", circuit_state)
+            return {
+                "product": product,
+                "resilience": {
+                    "source": "fresh",
+                    "stale": False,
+                    "fallback": False,
+                    "cache_age_seconds": 0,
+                    "service_a_latency_ms": round(a_ms),
+                    "service_b_latency_ms": round(b_latency_ms),
+                    "circuit_state": circuit_state,
+                },
+            }
+
+        except (httpx.TimeoutException, httpx.HTTPStatusError, httpx.RequestError):
+            _product_cb.record_failure()
+            circuit_state = _product_cb.state
+
+    # stale cache
+    cached = _product_cache.get(product_id)
+    if cached and (monotonic() - cached[1]) < _PRODUCT_CACHE_TTL_S:
+        product, cached_at = cached
+        a_ms = (monotonic() - t0) * 1000
+        _emit_product_aggregate_emf(a_ms, None, "stale_cache", circuit_state)
+        return {
+            "product": product,
+            "resilience": {
+                "source": "stale_cache",
+                "stale": True,
+                "fallback": False,
+                "cache_age_seconds": round(monotonic() - cached_at),
+                "service_a_latency_ms": round(a_ms),
+                "service_b_latency_ms": None,
+                "circuit_state": circuit_state,
+            },
+        }
+
+    # fallback
+    a_ms = (monotonic() - t0) * 1000
+    _emit_product_aggregate_emf(a_ms, None, "fallback", circuit_state)
+    return {
+        "product": _fallback_product(product_id),
+        "resilience": {
+            "source": "fallback",
+            "stale": False,
+            "fallback": True,
+            "cache_age_seconds": None,
+            "service_a_latency_ms": round(a_ms),
+            "service_b_latency_ms": None,
+            "circuit_state": circuit_state,
+        },
+    }
 
 
 @app.get("/")

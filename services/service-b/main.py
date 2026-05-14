@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import random
 import asyncio
 import logging
 import threading
@@ -15,12 +16,77 @@ app = FastAPI(title="service-b")
 
 SERVICE_A_URL = os.getenv("SERVICE_A_URL", "http://service-a/")
 
+PRODUCTS = {
+    "p-001": {
+        "product_id": "p-001",
+        "name": "Pro Mechanical Keyboard",
+        "price": 12980,
+        "stock": 12,
+        "rating": 4.6,
+        "review_count": 1284,
+        "review_summary": "打鍵感がよく、長時間作業でも疲れにくいというレビューが多いです。特にタイピング量の多い開発者やライターに支持されています。",
+        "recommendation_reason": "開発者・ライター向けの高評価モデルです。",
+        "updated_at": "2026-05-15T10:00:00Z",
+    },
+    "p-002": {
+        "product_id": "p-002",
+        "name": "Ergonomic Office Chair",
+        "price": 49800,
+        "stock": 5,
+        "rating": 4.4,
+        "review_count": 876,
+        "review_summary": "腰への負担が大幅に軽減されたという声が多く、長時間のデスクワークに最適です。組み立ても簡単とのレビューが目立ちます。",
+        "recommendation_reason": "長時間デスクワーク向けの人気モデルです。",
+        "updated_at": "2026-05-15T10:00:00Z",
+    },
+    "p-003": {
+        "product_id": "p-003",
+        "name": "4K Ultra-Wide Monitor",
+        "price": 68000,
+        "stock": 3,
+        "rating": 4.8,
+        "review_count": 542,
+        "review_summary": "発色が良く、広い作業領域で生産性が大幅に向上したというレビューが多いです。クリエイター用途にも十分な色域とのことです。",
+        "recommendation_reason": "クリエイター・エンジニア向けの高解像度モデルです。",
+        "updated_at": "2026-05-15T10:00:00Z",
+    },
+}
+
 
 def _latency_ms() -> int:
     try:
         return int(os.getenv("LATENCY_MS", "0"))
     except ValueError:
         return 0
+
+
+def _fault_rate() -> float:
+    try:
+        return float(os.getenv("FAULT_RATE", "0.0"))
+    except ValueError:
+        return 0.0
+
+
+def _emit_product_emf(response_ms: float, injected_ms: int, fault: bool):
+    emf = {
+        "_aws": {
+            "Timestamp": int(time.time() * 1000),
+            "CloudWatchMetrics": [{
+                "Namespace": "ChaosExperiment",
+                "Dimensions": [["Service"]],
+                "Metrics": [
+                    {"Name": "ResponseTimeMs",     "Unit": "Milliseconds"},
+                    {"Name": "InjectedLatencyMs",  "Unit": "Milliseconds"},
+                    {"Name": "FaultInjectedCount", "Unit": "Count"},
+                ],
+            }],
+        },
+        "Service": "service-b",
+        "ResponseTimeMs": round(response_ms, 2),
+        "InjectedLatencyMs": injected_ms,
+        "FaultInjectedCount": 1 if fault else 0,
+    }
+    print(json.dumps(emf), flush=True)
 
 
 # --- CPU stress ---
@@ -125,6 +191,28 @@ async def get_data(item_id: int):
     }
     print(json.dumps(emf), flush=True)
     return result
+
+
+@app.get("/products/{product_id}")
+async def get_product(product_id: str):
+    """商品詳細プロバイダ。レビュー要約・レコメンド理由など重いデータを返すため遅延が発生しやすい。"""
+    t0 = time.monotonic()
+
+    if random.random() < _fault_rate():
+        _emit_product_emf(0.0, 0, fault=True)
+        raise HTTPException(status_code=500, detail="simulated fault")
+
+    ms = _latency_ms()
+    if ms > 0:
+        await asyncio.sleep(ms / 1000)
+
+    product = PRODUCTS.get(product_id)
+    if not product:
+        raise HTTPException(status_code=404, detail=f"product {product_id} not found")
+
+    response_ms = (time.monotonic() - t0) * 1000
+    _emit_product_emf(response_ms, injected_ms=ms, fault=False)
+    return product
 
 
 @app.get("/")
