@@ -21,7 +21,16 @@ scale 操作には `apps_v1.patch_namespaced_deployment_scale()` を使うが、
 
 ## Decision
 
-chaos-agent ClusterRole に `deployments/scale` への `patch` 権限を追加する。
+chaos-agent ClusterRole に `deployments/scale` への `patch` 権限と、`deployments` への `update` 権限を追加する。
+
+```yaml
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "patch", "update"]   # update: replace_namespaced_deployment (HTTP PUT) のため
+- apiGroups: ["apps"]
+  resources: ["deployments/scale"]
+  verbs: ["patch"]                    # scale subresource は別エントリが必要
+```
 
 ## Rationale
 
@@ -32,10 +41,15 @@ chaos-agent ClusterRole に `deployments/scale` への `patch` 権限を追加�
 ### `deployments/scale` に `patch` のみ付与を選んだ理由
 
 - `patch_namespaced_deployment_scale` が必要とする権限は `patch` のみ
-- `deployments` への既存の `get`・`patch` は env var 操作（inject/remove）のために引き続き必要
+- `deployments` への既存の `get`・`patch` は env var 操作（inject）のために引き続き必要
 - 最小権限で済む
+
+### `deployments` に `update` を追加した理由
+
+`replace_namespaced_deployment`（HTTP PUT）は Kubernetes RBAC で `update` verb にマッピングされる。`patch` と `update` は別の verb であり、`patch` があっても `update`（PUT）は 403 になる。env var 削除を strategic merge patch から replace（PUT）に変更した（ADR 034）ため、この追加が必要になった。
 
 ## Consequences
 
 - Kubernetes では `resource` と `subresource` は常に別エントリが必要。同様に `deployments/status` など他の subresource を使う場合も別途追加が必要
 - `patch_namespaced_deployment_scale` には `body={"spec": {"replicas": N}}` を渡せばよく、フル Deployment オブジェクトは不要（scale subresource は spec.replicas のみ受け付ける）
+- HTTP メソッドと Kubernetes verb の対応: GET→get, PATCH→patch, PUT→update, POST→create, DELETE→delete。PUT を使う操作には `update` が必要
