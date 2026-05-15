@@ -93,6 +93,7 @@ resource "aws_cloudfront_distribution" "service_b" {
     content {
       error_code            = custom_error_response.value
       response_code         = 503
+      response_page_path    = "/"
       error_caching_min_ttl = 5
     }
   }

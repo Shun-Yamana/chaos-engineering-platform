@@ -68,6 +68,28 @@ resource "aws_eks_addon" "vpc_cni" {
   depends_on = [module.eks]
 }
 
+# addon 作成後に CoreDNS を再起動して Fargate ノードへのスケジューリングを確定させる
+# patch_coredns_fargate は addon より先に実行されるが、addon が Deployment を上書きするため
+# addon 作成後にも patch + rollout restart が必要
+resource "null_resource" "restart_coredns_after_addon" {
+  triggers = {
+    addon_arn        = aws_eks_addon.coredns.arn
+    cluster_endpoint = module.eks.cluster_endpoint
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.aws_region}
+      kubectl patch deployment coredns -n kube-system --type json \
+        -p '[{"op":"remove","path":"/spec/template/metadata/annotations/eks.amazonaws.com~1compute-type"}]' || true
+      kubectl rollout restart deployment/coredns -n kube-system
+      kubectl rollout status deployment/coredns -n kube-system --timeout=300s
+    EOT
+  }
+
+  depends_on = [aws_eks_addon.coredns]
+}
+
 resource "aws_eks_addon" "cloudwatch_observability" {
   cluster_name                = module.eks.cluster_name
   addon_name                  = "amazon-cloudwatch-observability"
@@ -119,8 +141,10 @@ resource "local_file" "ingress_yaml" {
 
 resource "null_resource" "apply_ingress" {
   triggers = {
-    origin_secret = random_password.cloudfront_origin_secret.result
-    ingress_hash  = local_file.ingress_yaml.content_md5
+    origin_secret    = random_password.cloudfront_origin_secret.result
+    ingress_hash     = local_file.ingress_yaml.content_md5
+    # クラスター再作成時（endpoint が変化）に必ず再実行して Ingress/ALB を再作成する
+    cluster_endpoint = module.eks.cluster_endpoint
   }
 
   provisioner "local-exec" {
@@ -138,7 +162,7 @@ resource "null_resource" "apply_ingress" {
     EOT
   }
 
-  depends_on = [module.eks, local_file.ingress_yaml]
+  depends_on = [null_resource.restart_coredns_after_addon, local_file.ingress_yaml]
 }
 
 # ---------------------------------------------------------------------------
