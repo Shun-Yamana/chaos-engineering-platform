@@ -90,14 +90,14 @@ jobs:
           ECR=${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
           IMAGE=$ECR/chaos-platform/service-a:${{ github.sha }}
           sed "s|SERVICE_A_IMAGE|$IMAGE|g" k8s/service-a.yaml | kubectl apply -f -
-          kubectl rollout status deployment/service-a -n default --timeout=120s
+          kubectl rollout status deployment/service-a -n default --timeout=300s
 
       - name: Deploy service-b
         run: |
           ECR=${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
           IMAGE=$ECR/chaos-platform/service-b:${{ github.sha }}
           sed "s|SERVICE_B_IMAGE|$IMAGE|g" k8s/service-b.yaml | kubectl apply -f -
-          kubectl rollout status deployment/service-b -n default --timeout=120s
+          kubectl rollout status deployment/service-b -n default --timeout=300s
 
       - name: Apply HPA and PDB
         run: |
@@ -120,7 +120,7 @@ jobs:
             -e "s|PLACEHOLDER_FIS_TEMPLATE_SERVICE_B|$PLACEHOLDER_FIS_TEMPLATE_SERVICE_B|g" \
             -e "s|PLACEHOLDER_TABLE_NAME|$PLACEHOLDER_TABLE_NAME|g" \
             k8s/chaos-agent.yaml | kubectl apply -f -
-          kubectl rollout status deployment/chaos-agent -n chaos --timeout=120s
+          kubectl rollout status deployment/chaos-agent -n chaos --timeout=300s
 
   deploy-frontend:
     name: Deploy Frontend
