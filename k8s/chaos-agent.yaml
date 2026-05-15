@@ -20,6 +20,9 @@ rules:
   - apiGroups: ["apps"]
     resources: ["deployments"]
     verbs: ["get", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale"]
+    verbs: ["patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -74,13 +77,13 @@ spec:
             - name: AWS_REGION
               value: ap-northeast-1
             - name: SERVICE_B_URL
-              value: http://k8s-default-serviceb-64e7c32426-192527324.ap-northeast-1.elb.amazonaws.com/items/1
+              value: http://k8s-default-serviceb-64e7c32426-1389829488.ap-northeast-1.elb.amazonaws.com/items/1
             - name: TRAFFIC_GEN_INTERVAL
               value: "30"
             - name: ALB_ORIGIN_SECRET
               value: fLORutDU9AqgI2QQl5tbQspmOYRZdSIi
             - name: SERVICE_A_AGGREGATE_URL
-              value: "http://service-a/aggregate/1"
+              value: "http://service-a.default/aggregate/1"
           resources:
             requests:
               cpu: "64m"

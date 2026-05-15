@@ -27,8 +27,9 @@ def get_error_rate(end_time: datetime, window_minutes: int) -> float:
         logger.warning("ALB_ARN_SUFFIX not set, skipping error_rate query")
         return 0.0
 
-    start_time = end_time - timedelta(minutes=window_minutes)
-    period = window_minutes * 60
+    # バケット境界ずれ対策: end を1分前の :00 に揃え、window+1分遡る
+    end_aligned = end_time.replace(second=0, microsecond=0)
+    start_time = end_aligned - timedelta(minutes=window_minutes + 1)
     dimensions = [{"Name": "LoadBalancer", "Value": ALB_ARN_SUFFIX}]
 
     def query_sum(metric_name: str) -> float:
@@ -37,12 +38,11 @@ def get_error_rate(end_time: datetime, window_minutes: int) -> float:
             MetricName=metric_name,
             Dimensions=dimensions,
             StartTime=start_time,
-            EndTime=end_time,
-            Period=period,
+            EndTime=end_aligned,
+            Period=60,
             Statistics=["Sum"],
         )
-        datapoints = resp.get("Datapoints", [])
-        return datapoints[0]["Sum"] if datapoints else 0.0
+        return sum(dp["Sum"] for dp in resp.get("Datapoints", []))
 
     request_count = query_sum("RequestCount")
     if request_count == 0:
@@ -57,8 +57,8 @@ def get_latency_p95_ms(end_time: datetime, window_minutes: int) -> float | None:
     if not ALB_ARN_SUFFIX:
         return None
 
-    start_time = end_time - timedelta(minutes=window_minutes)
-    period = window_minutes * 60
+    end_aligned = end_time.replace(second=0, microsecond=0)
+    start_time = end_aligned - timedelta(minutes=window_minutes + 1)
     dimensions = [{"Name": "LoadBalancer", "Value": ALB_ARN_SUFFIX}]
 
     resp = cloudwatch.get_metric_statistics(
@@ -66,14 +66,14 @@ def get_latency_p95_ms(end_time: datetime, window_minutes: int) -> float | None:
         MetricName="TargetResponseTime",
         Dimensions=dimensions,
         StartTime=start_time,
-        EndTime=end_time,
-        Period=period,
+        EndTime=end_aligned,
+        Period=60,
         ExtendedStatistics=["p95"],
     )
     datapoints = resp.get("Datapoints", [])
     if not datapoints:
         return None
-    return round(datapoints[0]["ExtendedStatistics"]["p95"] * 1000, 2)  # s → ms
+    return round(max(dp["ExtendedStatistics"]["p95"] for dp in datapoints) * 1000, 2)  # s → ms
 
 
 def get_slo(service: str) -> dict:

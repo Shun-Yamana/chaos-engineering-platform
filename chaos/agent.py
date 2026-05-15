@@ -90,6 +90,20 @@ class ChaosAgent:
     def _patch_deployment(self, namespace: str, service: str, deployment):
         self.apps_v1.patch_namespaced_deployment(name=service, namespace=namespace, body=deployment)
 
+    def _remove_env_var(self, namespace: str, service: str, var_name: str):
+        """replace（PUT）で env var を確実に削除する。strategic merge patch は省略→削除にならないため。"""
+        deployment = self._get_deployment(namespace, service)
+        for container in deployment.spec.template.spec.containers:
+            if container.name == service and container.env:
+                before = len(container.env)
+                container.env = [e for e in container.env if e.name != var_name]
+                if len(container.env) == before:
+                    return  # 存在しなければ何もしない
+                break
+        else:
+            return
+        self.apps_v1.replace_namespaced_deployment(name=service, namespace=namespace, body=deployment)
+
     # --- pod_kill ---
 
     def pod_kill(self, experiment: Experiment):
@@ -132,15 +146,7 @@ class ChaosAgent:
         logger.info(f"[{experiment.experiment_id}] CPU_STRESS=true patched")
 
     def cpu_stress_remove(self, experiment: Experiment):
-        deployment = self._get_deployment(experiment.namespace, experiment.service)
-
-        for container in deployment.spec.template.spec.containers:
-            if container.name == experiment.service:
-                if container.env:
-                    container.env = [e for e in container.env if e.name != "CPU_STRESS"]
-                break
-
-        self._patch_deployment(experiment.namespace, experiment.service, deployment)
+        self._remove_env_var(experiment.namespace, experiment.service, "CPU_STRESS")
         logger.info(f"[{experiment.experiment_id}] CPU_STRESS removed")
 
     # --- memory_stress ---
@@ -162,15 +168,7 @@ class ChaosAgent:
         logger.info(f"[{experiment.experiment_id}] MEMORY_STRESS_MB={experiment.memory_stress_mb} patched")
 
     def memory_stress_remove(self, experiment: Experiment):
-        deployment = self._get_deployment(experiment.namespace, experiment.service)
-
-        for container in deployment.spec.template.spec.containers:
-            if container.name == experiment.service:
-                if container.env:
-                    container.env = [e for e in container.env if e.name != "MEMORY_STRESS_MB"]
-                break
-
-        self._patch_deployment(experiment.namespace, experiment.service, deployment)
+        self._remove_env_var(experiment.namespace, experiment.service, "MEMORY_STRESS_MB")
         logger.info(f"[{experiment.experiment_id}] MEMORY_STRESS_MB removed")
 
     # --- http_error_inject ---
@@ -190,15 +188,7 @@ class ChaosAgent:
         logger.info(f"[{experiment.experiment_id}] FAULT_RATE={experiment.fault_rate} patched")
 
     def http_error_remove(self, experiment: Experiment):
-        deployment = self._get_deployment(experiment.namespace, experiment.service)
-
-        for container in deployment.spec.template.spec.containers:
-            if container.name == experiment.service:
-                if container.env:
-                    container.env = [e for e in container.env if e.name != "FAULT_RATE"]
-                break
-
-        self._patch_deployment(experiment.namespace, experiment.service, deployment)
+        self._remove_env_var(experiment.namespace, experiment.service, "FAULT_RATE")
         logger.info(f"[{experiment.experiment_id}] FAULT_RATE removed")
 
     # --- network_latency ---
@@ -221,36 +211,91 @@ class ChaosAgent:
         logger.info(f"[{experiment.experiment_id}] LATENCY_MS={experiment.latency_ms} patched")
 
     def network_latency_remove(self, experiment: Experiment):
-        deployment = self._get_deployment(experiment.namespace, experiment.service)
-
-        for container in deployment.spec.template.spec.containers:
-            if container.name == experiment.service:
-                if container.env:
-                    container.env = [e for e in container.env if e.name != "LATENCY_MS"]
-                break
-
-        self._patch_deployment(experiment.namespace, experiment.service, deployment)
+        self._remove_env_var(experiment.namespace, experiment.service, "LATENCY_MS")
         logger.info(f"[{experiment.experiment_id}] LATENCY_MS removed")
 
     # --- run / stop ---
 
     def _interruptible_sleep(self, experiment: Experiment, seconds: int, check_interval: int = 5) -> bool:
-        """duration_seconds 分スリープしつつ DynamoDB の status を定期確認する。
-        外部から status=stopped にされた場合は False を返して早期終了する。"""
+        """duration_seconds 分スリープしつつ DynamoDB を定期確認する。
+        - status=stopped: False を返して早期終了
+        - emergency_stop=true: バックグラウンドで自己防衛を起動し、実験は継続
+        """
         table = dynamodb.Table(experiment.experiment_table)
         elapsed = 0
+        _emergency_triggered = False
         while elapsed < seconds:
             time.sleep(min(check_interval, seconds - elapsed))
             elapsed += check_interval
 
-            resp = table.get_item(Key={
+            item = table.get_item(Key={
                 "experiment_id": experiment.experiment_id,
                 "started_at": experiment.started_at,
-            })
-            if resp.get("Item", {}).get("status") == "stopped":
+            }).get("Item", {})
+
+            if item.get("status") == "stopped":
                 logger.info(f"[{experiment.experiment_id}] external stop detected")
                 return False
+
+            if item.get("emergency_stop") and not _emergency_triggered:
+                _emergency_triggered = True
+                logger.info(f"[{experiment.experiment_id}] emergency_stop detected — launching self-defense")
+                threading.Thread(
+                    target=self._emergency_recover,
+                    args=(experiment,),
+                    daemon=True,
+                    name=f"emergency-{experiment.experiment_id[:8]}",
+                ).start()
+
         return True
+
+    def _emergency_recover(self, experiment: Experiment):
+        """SLO 違反時の自己防衛: scale-to-0 でユーザーへの障害を即遮断 → fault 除去 → 自動回復"""
+        namespace = experiment.namespace
+        service = experiment.service
+        original_replicas = 2
+        try:
+            deployment = self._get_deployment(namespace, service)
+            original_replicas = deployment.spec.replicas or 2
+
+            # scale to 0: ユーザーへの障害露出を即断ち切る（CloudFront が sorry page を返す）
+            self.apps_v1.patch_namespaced_deployment_scale(
+                name=service, namespace=namespace,
+                body={"spec": {"replicas": 0}},
+            )
+            logger.info(f"[{experiment.experiment_id}] emergency: {service} scaled to 0 — sorry page active")
+
+            # fault 除去（replicas=0 なのでローリング更新なし、即時適用）
+            cleanup = {
+                "cpu_stress": self.cpu_stress_remove,
+                "memory_stress": self.memory_stress_remove,
+                "http_error_inject": self.http_error_remove,
+                "network_latency": self.network_latency_remove,
+            }
+            if experiment.fault_type in cleanup:
+                cleanup[experiment.fault_type](experiment)
+
+            # 30 秒間 sorry page を維持
+            logger.info(f"[{experiment.experiment_id}] emergency: holding scale=0 for 30s")
+            time.sleep(30)
+
+            # 正常な Pod で回復
+            self.apps_v1.patch_namespaced_deployment_scale(
+                name=service, namespace=namespace,
+                body={"spec": {"replicas": original_replicas}},
+            )
+            logger.info(f"[{experiment.experiment_id}] emergency: {service} scaled back to {original_replicas} — recovering")
+
+        except Exception as e:
+            logger.error(f"[{experiment.experiment_id}] emergency_recover failed: {e}")
+            # フェイルセーフ: scale=0 のまま放置しない
+            try:
+                self.apps_v1.patch_namespaced_deployment_scale(
+                    name=service, namespace=namespace,
+                    body={"spec": {"replicas": original_replicas}},
+                )
+            except Exception:
+                pass
 
     def run(self, experiment: Experiment):
         experiment.started_at = datetime.now(timezone.utc).isoformat()
@@ -264,31 +309,31 @@ class ChaosAgent:
 
             elif experiment.fault_type == "cpu_stress":
                 self.cpu_stress_inject(experiment)
-                stopped = self._interruptible_sleep(experiment, experiment.duration_seconds)
-                self.cpu_stress_remove(experiment)
-                if not stopped:
+                completed = self._interruptible_sleep(experiment, experiment.duration_seconds)
+                if not completed:
                     return
+                self.cpu_stress_remove(experiment)
 
             elif experiment.fault_type == "memory_stress":
                 self.memory_stress_inject(experiment)
-                stopped = self._interruptible_sleep(experiment, experiment.duration_seconds)
-                self.memory_stress_remove(experiment)
-                if not stopped:
+                completed = self._interruptible_sleep(experiment, experiment.duration_seconds)
+                if not completed:
                     return
+                self.memory_stress_remove(experiment)
 
             elif experiment.fault_type == "http_error_inject":
                 self.http_error_inject(experiment)
-                stopped = self._interruptible_sleep(experiment, experiment.duration_seconds)
-                self.http_error_remove(experiment)
-                if not stopped:
+                completed = self._interruptible_sleep(experiment, experiment.duration_seconds)
+                if not completed:
                     return
+                self.http_error_remove(experiment)
 
             elif experiment.fault_type == "network_latency":
                 self.network_latency_inject(experiment)
-                stopped = self._interruptible_sleep(experiment, experiment.duration_seconds)
-                self.network_latency_remove(experiment)
-                if not stopped:
+                completed = self._interruptible_sleep(experiment, experiment.duration_seconds)
+                if not completed:
                     return
+                self.network_latency_remove(experiment)
 
             else:
                 raise ValueError(f"Unknown fault_type: {experiment.fault_type}")

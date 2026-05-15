@@ -146,6 +146,9 @@ def health():
 
 @app.get("/items/{item_id}")
 async def get_item(item_id: int):
+    if random.random() < _fault_rate():
+        raise HTTPException(status_code=500, detail="simulated fault")
+
     ms = _latency_ms()
     if ms > 0:
         await asyncio.sleep(ms / 1000)
