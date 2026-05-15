@@ -36,7 +36,8 @@ def _alb_dims() -> list[dict]:
 def _query_sum(metric: str, start: datetime, end: datetime) -> float:
     if not ALB_ARN_SUFFIX:
         return 0.0
-    period = max(int((end - start).total_seconds()), 60)
+    raw = max(int((end - start).total_seconds()), 60)
+    period = ((raw + 59) // 60) * 60  # CloudWatch requires multiples of 60
     resp = cloudwatch.get_metric_statistics(
         Namespace="AWS/ApplicationELB",
         MetricName=metric,
@@ -52,7 +53,8 @@ def _query_sum(metric: str, start: datetime, end: datetime) -> float:
 
 def _query_p95(metric: str, namespace: str, dimensions: list[dict],
                start: datetime, end: datetime) -> float | None:
-    period = max(int((end - start).total_seconds()), 60)
+    raw = max(int((end - start).total_seconds()), 60)
+    period = ((raw + 59) // 60) * 60  # CloudWatch requires multiples of 60
     resp = cloudwatch.get_metric_statistics(
         Namespace=namespace,
         MetricName=metric,
