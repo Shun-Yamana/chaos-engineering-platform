@@ -74,6 +74,7 @@ jobs:
         run: |
           kubectl apply -f k8s/namespace.yaml
           kubectl apply -f k8s/network-policy.yaml
+          kubectl apply -f k8s/envoy-config.yaml
 
       - name: Apply ingress
         env:
