@@ -315,7 +315,8 @@ class ChaosAgent:
                 pass
 
     def run(self, experiment: Experiment):
-        experiment.started_at = datetime.now(timezone.utc).isoformat()
+        if not experiment.started_at:
+            experiment.started_at = datetime.now(timezone.utc).isoformat()
         self._record_experiment(experiment, "running")
 
         try:
