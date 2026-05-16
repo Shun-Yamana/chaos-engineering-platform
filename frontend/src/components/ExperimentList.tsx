@@ -122,6 +122,12 @@ export function ExperimentList({ onSelect, onNew, refreshKey }: Props) {
                 <span className="font-medium text-slate-900 text-sm truncate group-hover:text-red-600 transition-colors">
                   {exp.name || exp.experiment_id.slice(0, 8)}
                 </span>
+                {exp.evaluation_result === "pass" && (
+                  <span className="shrink-0 text-xs font-bold px-1.5 py-0.5 rounded bg-green-100 text-green-700">PASS</span>
+                )}
+                {exp.evaluation_result === "fail" && (
+                  <span className="shrink-0 text-xs font-bold px-1.5 py-0.5 rounded bg-red-100 text-red-700">FAIL</span>
+                )}
               </div>
               <span className="text-xs text-slate-400 font-mono shrink-0">{exp.experiment_id.slice(0, 8)}</span>
             </div>

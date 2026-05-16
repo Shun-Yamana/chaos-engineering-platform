@@ -1,29 +1,11 @@
 import { useEffect, useRef, useState } from "react"
-import { api, type Experiment } from "../api"
+import { api, type CriterionResult, type Experiment } from "../api"
 import { StatusBadge } from "./StatusBadge"
 
 interface Props {
   experimentId: string
   onBack: () => void
   onStopped: () => void
-}
-
-type Outcome = "passed" | "breached" | "manual" | "failed" | "inconclusive"
-
-const OUTCOME: Record<Outcome, { label: string; bg: string; text: string; icon: string; desc: string }> = {
-  passed:      { label: "PASSED",    bg: "bg-green-50",  text: "text-green-700",  icon: "✓", desc: "SLO 閾値内で実験完走" },
-  breached:    { label: "BREACHED",  bg: "bg-red-50",    text: "text-red-700",    icon: "✕", desc: "SLO 違反を検知・自動停止" },
-  manual:      { label: "STOPPED",   bg: "bg-slate-50",  text: "text-slate-600",  icon: "■", desc: "手動停止" },
-  failed:      { label: "FAILED",    bg: "bg-red-50",    text: "text-red-700",    icon: "✕", desc: "実験エラー" },
-  inconclusive:{ label: "RUNNING…",  bg: "bg-amber-50",  text: "text-amber-700",  icon: "⟳", desc: "実行中" },
-}
-
-function getOutcome(exp: { status: string; stop_reason?: string }): Outcome {
-  if (exp.status === "running" || exp.status === "pending") return "inconclusive"
-  if (exp.status === "completed") return "passed"
-  if (exp.status === "failed")    return "failed"
-  if (exp.stop_reason && exp.stop_reason !== "manual") return "breached"
-  return "manual"
 }
 
 const FAULT_COLORS: Record<string, string> = {
@@ -82,6 +64,17 @@ export function ExperimentDetail({ experimentId, onBack: _onBack, onStopped }: P
       if (timerRef.current)   clearInterval(timerRef.current)
     }
   }, [experimentId])
+
+  // 実験終了後も evaluation_result が出るまでポーリングを継続する
+  useEffect(() => {
+    if (!exp) return
+    const isDone      = exp.status !== "running" && exp.status !== "pending"
+    const isEvaluated = Boolean(exp.evaluation_result)
+    if (isDone && isEvaluated) {
+      if (intervalRef.current) clearInterval(intervalRef.current)
+      if (timerRef.current)   clearInterval(timerRef.current)
+    }
+  }, [exp?.status, exp?.evaluation_result])
 
   // Elapsed timer for running experiments
   useEffect(() => {
@@ -197,8 +190,8 @@ export function ExperimentDetail({ experimentId, onBack: _onBack, onStopped }: P
         <span className="text-xs font-mono text-slate-600">{exp.experiment_id}</span>
       </div>
 
-      {/* Outcome */}
-      {!isActive && <OutcomeCard exp={exp} />}
+      {/* Evaluation result */}
+      {!isActive && <EvaluationCard exp={exp} />}
 
       {/* Stop button */}
       {isActive && (
@@ -224,68 +217,114 @@ export function ExperimentDetail({ experimentId, onBack: _onBack, onStopped }: P
 
 // ---------------------------------------------------------------------------
 
-function MetricGauge({ label, value, threshold, inverted = false }: {
-  label: string
-  value: number
-  threshold: number
-  inverted?: boolean
-}) {
-  const pct = Math.min(100, threshold > 0 ? (value / threshold) * 100 : 0)
-  const breached = inverted ? value < threshold : value > threshold
-  const barColor = breached ? "bg-red-500" : "bg-green-500"
+function CriterionRow({ c }: { c: CriterionResult }) {
+  const pass = c.pass
+  const icon = pass === true ? "✓" : pass === false ? "✕" : "–"
+  const color = pass === true ? "text-green-600" : pass === false ? "text-red-600" : "text-slate-400"
+  const label = c.criterion.replace(/_/g, " ")
+  const valStr = c.value != null ? c.value.toFixed(3) : (c.note ?? "no data")
 
   return (
-    <div>
-      <div className="flex justify-between text-xs mb-1">
-        <span className="text-slate-500">{label}</span>
-        <span className={`font-mono font-medium ${breached ? "text-red-600" : "text-green-600"}`}>
-          {(value * (label.includes("Rate") ? 100 : 1)).toFixed(label.includes("Rate") ? 2 : 2)}
-          {label.includes("Rate") ? "%" : "×"}
-          {" "}<span className="text-slate-400 font-normal">
-            / {(threshold * (label.includes("Rate") ? 100 : 1)).toFixed(label.includes("Rate") ? 0 : 1)}
-            {label.includes("Rate") ? "%" : "×"}
-          </span>
-        </span>
+    <div className="flex items-start justify-between gap-2 py-1.5 border-b border-slate-100 last:border-0">
+      <div className="flex items-center gap-2 min-w-0">
+        <span className={`text-sm font-bold shrink-0 ${color}`}>{icon}</span>
+        <span className="text-xs text-slate-600 truncate">{label}</span>
       </div>
-      <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
-        <div className={`h-full rounded-full transition-all duration-500 ${barColor}`} style={{ width: `${pct}%` }} />
+      <div className="text-right shrink-0">
+        <span className={`text-xs font-mono ${color}`}>{valStr}</span>
+        <span className="text-xs text-slate-400 ml-1">{c.threshold}</span>
+        {c.ttr_actual_seconds != null && (
+          <div className="text-xs text-slate-400">TTR {c.ttr_actual_seconds}s / {c.ttr_limit_seconds}s</div>
+        )}
       </div>
     </div>
   )
 }
 
-function OutcomeCard({ exp }: { exp: Experiment }) {
-  const outcome = getOutcome(exp)
-  const meta = OUTCOME[outcome]
-  const hasMetrics = exp.final_error_rate != null || exp.final_burn_rate != null
+function EvaluationCard({ exp }: { exp: Experiment }) {
+  const details = exp.evaluation_details
+  const result  = exp.evaluation_result
+
+  // 評価待ち
+  if (!result) {
+    return (
+      <div className="border border-slate-200 rounded-xl bg-slate-50 px-4 py-4 flex items-center gap-3">
+        <span className="text-slate-400 animate-spin text-lg">⟳</span>
+        <div>
+          <div className="text-sm font-semibold text-slate-600">Awaiting Evaluation</div>
+          <div className="text-xs text-slate-400 mt-0.5">CloudWatch メトリクス収集後（約 5 分）に自動評価されます</div>
+        </div>
+      </div>
+    )
+  }
+
+  const passed     = result === "pass"
+  const borderColor = passed ? "#16a34a" : "#dc2626"
+  const headerBg   = passed ? "bg-green-50" : "bg-red-50"
+  const headerText = passed ? "text-green-700" : "text-red-700"
+  const divider    = passed ? "border-green-100" : "border-red-100"
 
   return (
-    <div className={`border rounded-xl overflow-hidden ${meta.bg} border-current border-opacity-20`}
-         style={{ borderColor: outcome === "passed" ? "#16a34a" : outcome === "breached" || outcome === "failed" ? "#dc2626" : "#94a3b8" }}>
-      <div className="px-4 py-3 flex items-center gap-3">
-        <span className={`text-xl font-bold ${meta.text}`}>{meta.icon}</span>
+    <div className="border rounded-xl overflow-hidden" style={{ borderColor }}>
+      {/* 判定ヘッダー */}
+      <div className={`px-4 py-3 flex items-center gap-3 ${headerBg}`}>
+        <span className={`text-xl font-bold ${headerText}`}>{passed ? "✓" : "✕"}</span>
         <div>
-          <div className={`text-sm font-bold ${meta.text}`}>{meta.label}</div>
-          <div className="text-xs text-slate-500">{meta.desc}</div>
+          <div className={`text-sm font-bold ${headerText}`}>{passed ? "PASS" : "FAIL"}</div>
+          <div className="text-xs text-slate-500">
+            {exp.evaluated_at ? `Evaluated at ${exp.evaluated_at.slice(0, 19).replace("T", " ")} UTC` : "Evaluated"}
+          </div>
         </div>
       </div>
 
-      {hasMetrics && (
-        <div className={`px-4 pb-4 space-y-3 border-t ${outcome === "passed" ? "border-green-100" : "border-red-100"}`}>
-          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider pt-3">SLO Metrics</p>
-          {exp.final_error_rate != null && exp.error_rate_threshold != null && (
-            <MetricGauge
-              label="Error Rate"
-              value={exp.final_error_rate}
-              threshold={exp.error_rate_threshold}
-            />
-          )}
-          {exp.final_burn_rate != null && exp.burn_rate_threshold != null && (
-            <MetricGauge
-              label="Burn Rate"
-              value={exp.final_burn_rate}
-              threshold={exp.burn_rate_threshold}
-            />
+      {details && (
+        <div className={`border-t ${divider}`}>
+          {/* Phase A */}
+          <div className="px-4 pt-3 pb-1">
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Phase A — Absorb / Contain</p>
+            {details.phase_a_absorption.map((c, i) => <CriterionRow key={i} c={c} />)}
+          </div>
+
+          {/* Phase B */}
+          <div className="px-4 pt-2 pb-1">
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Phase B — Recovery / TTR</p>
+            {details.phase_b_recovery.map((c, i) => <CriterionRow key={i} c={c} />)}
+          </div>
+
+          {/* Safety Net */}
+          <div className="px-4 pt-2 pb-3">
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Safety Net</p>
+            <div className="flex items-center justify-between py-1">
+              <span className="text-xs text-slate-600">auto_stopper fired</span>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-slate-400">
+                  {details.safety_net.auto_stopper_fired ? "fired" : "not fired"}
+                  {" "}(expected: {details.safety_net.expected ? "yes" : "no"})
+                </span>
+                <span className={`text-sm font-bold ${details.safety_net.pass ? "text-green-600" : "text-red-600"}`}>
+                  {details.safety_net.pass ? "✓" : "✕"}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* SLO metrics if available */}
+          {(exp.final_error_rate != null || exp.final_burn_rate != null) && (
+            <div className={`px-4 pt-2 pb-3 border-t ${divider}`}>
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">SLO at Emergency Stop</p>
+              {exp.final_error_rate != null && (
+                <div className="flex justify-between text-xs py-1">
+                  <span className="text-slate-500">Error Rate</span>
+                  <span className="font-mono text-slate-700">{(exp.final_error_rate * 100).toFixed(2)}%</span>
+                </div>
+              )}
+              {exp.final_burn_rate != null && (
+                <div className="flex justify-between text-xs py-1">
+                  <span className="text-slate-500">Burn Rate</span>
+                  <span className="font-mono text-slate-700">{exp.final_burn_rate.toFixed(2)}×</span>
+                </div>
+              )}
+            </div>
           )}
         </div>
       )}

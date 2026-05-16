@@ -5,6 +5,26 @@ if (!BASE && import.meta.env.PROD) {
   console.error("[api] VITE_API_ENDPOINT is not set — all API calls will fail")
 }
 
+export interface CriterionResult {
+  criterion: string
+  value: number | null
+  threshold: string
+  pass: boolean | null
+  note?: string
+  ttr_actual_seconds?: number
+  ttr_limit_seconds?: number
+}
+
+export interface EvaluationDetails {
+  phase_a_absorption: CriterionResult[]
+  phase_b_recovery: CriterionResult[]
+  safety_net: {
+    auto_stopper_fired: boolean
+    expected: boolean
+    pass: boolean
+  }
+}
+
 export interface Experiment {
   experiment_id: string
   name: string
@@ -22,6 +42,9 @@ export interface Experiment {
   burn_rate_threshold?: number
   final_error_rate?: number
   final_burn_rate?: number
+  evaluation_result?: "pass" | "fail"
+  evaluation_details?: EvaluationDetails
+  evaluated_at?: string
 }
 
 export interface StartPayload {
