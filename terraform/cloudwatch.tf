@@ -338,6 +338,51 @@ resource "aws_cloudwatch_metric_alarm" "service_a_memory_high" {
   tags          = local.common_tags
 }
 
+# ⑧ HealthyHostCount < 1 — pod_kill でサービスが完全停止した状態を検知
+resource "aws_cloudwatch_metric_alarm" "service_b_no_healthy_hosts" {
+  alarm_name          = "${var.project_name}-service-b-no-healthy-hosts"
+  alarm_description   = "service-b has no healthy hosts (pod_kill or scale-to-0 in progress)"
+  comparison_operator = "LessThanThreshold"
+  evaluation_periods  = 1
+  threshold           = 1
+  treat_missing_data  = "notBreaching"
+
+  metric_name = "HealthyHostCount"
+  namespace   = "AWS/ApplicationELB"
+  period      = 60
+  statistic   = "Average"
+  dimensions = {
+    LoadBalancer = data.aws_lb.service_b.arn_suffix
+  }
+
+  alarm_actions = [aws_sns_topic.chaos_alerts.arn]
+  ok_actions    = [aws_sns_topic.chaos_alerts.arn]
+  tags          = local.common_tags
+}
+
+# ⑨ service-a AggregateDurationMs p95 > 450ms — network_latency 実験で service-a への伝播を検知
+# EMF メトリクス: service-a の /aggregate エンドポイントが stdout に出力 → CloudWatch Logs → 自動抽出
+resource "aws_cloudwatch_metric_alarm" "service_a_aggregate_latency_p95" {
+  alarm_name          = "${var.project_name}-service-a-aggregate-latency-p95"
+  alarm_description   = "service-a aggregate P95 latency exceeded 450ms (network_latency propagation indicator)"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  threshold           = 450
+  treat_missing_data  = "notBreaching"
+
+  metric_name        = "AggregateDurationMs"
+  namespace          = "ChaosExperiment"
+  period             = 60
+  extended_statistic = "p95"
+  dimensions = {
+    Service = "service-a"
+  }
+
+  alarm_actions = [aws_sns_topic.chaos_alerts.arn]
+  ok_actions    = [aws_sns_topic.chaos_alerts.arn]
+  tags          = local.common_tags
+}
+
 # ③ chaos-agent Pod 異常 (Container Insights)
 resource "aws_cloudwatch_metric_alarm" "chaos_agent_pod_down" {
   alarm_name          = "${var.project_name}-chaos-agent-pod-down"
