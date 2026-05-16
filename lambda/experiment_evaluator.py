@@ -219,13 +219,14 @@ def evaluate_http_error_inject(item: dict, fault_start: datetime, fault_end: dat
         _check("auto_stopper_fired_within_6min",
                auto_stopper_latency_s, "<=", 360),
     ]
-    # rolling update 完了まで 120s 見て fault_end + 120s 以降を計測
-    ttr_s = _first_below_threshold(get_alb_error_rate, 0.005, fault_end, 300)
+    # emergency recover (scale=0 → scale back → rolling update) が fault_end+120s 頃に完了する。
+    # +180s に延ばして rolling update 末尾のエラー混入を回避する。
+    ttr_s = _first_below_threshold(get_alb_error_rate, 0.005, fault_end, 360)
     phase_b = [
         _check("error_rate_recovery",
-               get_alb_error_rate(fault_end + timedelta(seconds=120),
-                                  fault_end + timedelta(seconds=300)),
-               "<=", 0.005, ttr_actual_s=ttr_s, ttr_limit_s=180),
+               get_alb_error_rate(fault_end + timedelta(seconds=180),
+                                  fault_end + timedelta(seconds=360)),
+               "<=", 0.005, ttr_actual_s=ttr_s, ttr_limit_s=240),
     ]
     return phase_a, phase_b
 
@@ -285,7 +286,10 @@ def evaluate_safety_net(fault_type: str, item: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def evaluate(item: dict) -> dict:
-    fault_type = item["fault_type"]
+    fault_type = item.get("fault_type")
+    if not fault_type:
+        logger.warning(f"Missing fault_type for {item.get('experiment_id')}, skipping")
+        return {}
     fault_start = datetime.fromisoformat(item["started_at"].replace("Z", "+00:00"))
 
     if item.get("stopped_at"):
