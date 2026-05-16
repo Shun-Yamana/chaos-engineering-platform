@@ -1,6 +1,9 @@
 import { getToken } from "./auth"
 
 const BASE = import.meta.env.VITE_API_ENDPOINT ?? ""
+if (!BASE && import.meta.env.PROD) {
+  console.error("[api] VITE_API_ENDPOINT is not set — all API calls will fail")
+}
 
 export interface Experiment {
   experiment_id: string

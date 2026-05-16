@@ -92,7 +92,8 @@ def get_emf_p95_ms(metric: str, service: str, start: datetime, end: datetime) ->
 
 
 def get_emf_max(metric: str, service: str, start: datetime, end: datetime) -> float | None:
-    period = max(int((end - start).total_seconds()), 60)
+    raw = max(int((end - start).total_seconds()), 60)
+    period = ((raw + 59) // 60) * 60  # CloudWatch requires multiples of 60
     dims = [{"Name": "Service", "Value": service}]
     resp = cloudwatch.get_metric_statistics(
         Namespace="ChaosExperiment",
@@ -244,22 +245,19 @@ def evaluate_network_latency(fault_start: datetime, fault_end: datetime) -> tupl
 # ---------------------------------------------------------------------------
 
 def evaluate_safety_net(fault_type: str, item: dict) -> dict:
-    """http_error_inject のみ auto_stopper 発動が合格条件。他実験では不発動が合格。"""
-    stop_reason = item.get("stop_reason", "")
-    auto_stopper_fired = bool(stop_reason and "auto_stopper" not in stop_reason.lower()
-                               and item.get("status") == "stopped")
-    # http_error_inject: stopped かつ auto-stopper による停止 → pass
+    """http_error_inject のみ auto_stopper 発動が合格条件。他実験では不発動が合格。
+    auto_stopper は実験を止めず emergency_stop フラグを立てるだけ。実験は completed で終わる。
+    chaos-agent の _record_experiment は update_item でフラグを保持するため、ここで参照可能。
+    """
+    auto_stopper_fired = bool(item.get("emergency_stop"))
     if fault_type == "http_error_inject":
         expected = True
-        fired = item.get("status") == "stopped"
-        passed = fired  # stopped = auto-stopper が期待通り発動
+        passed = auto_stopper_fired
     else:
         expected = False
-        fired = item.get("status") == "stopped"
-        passed = not fired  # stopped = 予期しない停止 → fail
-
+        passed = not auto_stopper_fired
     return {
-        "auto_stopper_fired": fired,
+        "auto_stopper_fired": auto_stopper_fired,
         "expected": expected,
         "pass": passed,
     }

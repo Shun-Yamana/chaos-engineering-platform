@@ -66,23 +66,40 @@ class ChaosAgent:
         now = datetime.now(timezone.utc).isoformat()
         expires_at = int((datetime.now(timezone.utc) + timedelta(days=30)).timestamp())
 
-        item = {
-            "experiment_id": experiment.experiment_id,
-            "started_at": experiment.started_at or now,
-            "name": experiment.name,
-            "target_service": experiment.service,
-            "namespace": experiment.namespace,
-            "fault_type": experiment.fault_type,
-            "duration_seconds": experiment.duration_seconds,
-            "status": status,
-            "expires_at": expires_at,
-        }
-        if stop_reason:
-            item["stop_reason"] = stop_reason
-        if status in ("stopped", "completed"):
-            item["stopped_at"] = now
-
-        table.put_item(Item=item)
+        if status == "running":
+            # 初回作成: put_item でレコードを生成する
+            item = {
+                "experiment_id": experiment.experiment_id,
+                "started_at": experiment.started_at or now,
+                "name": experiment.name,
+                "target_service": experiment.service,
+                "namespace": experiment.namespace,
+                "fault_type": experiment.fault_type,
+                "duration_seconds": experiment.duration_seconds,
+                "status": status,
+                "expires_at": expires_at,
+            }
+            table.put_item(Item=item)
+        else:
+            # 終端状態: update_item で auto_stopper が書いた emergency_stop 等を保持する
+            update_expr = "SET #st = :status, expires_at = :exp"
+            names = {"#st": "status"}
+            values = {":status": status, ":exp": expires_at}
+            if stop_reason:
+                update_expr += ", stop_reason = :reason"
+                values[":reason"] = stop_reason
+            if status in ("stopped", "completed", "failed"):
+                update_expr += ", stopped_at = :now"
+                values[":now"] = now
+            table.update_item(
+                Key={
+                    "experiment_id": experiment.experiment_id,
+                    "started_at": experiment.started_at or now,
+                },
+                UpdateExpression=update_expr,
+                ExpressionAttributeNames=names,
+                ExpressionAttributeValues=values,
+            )
 
     def _get_deployment(self, namespace: str, service: str):
         return self.apps_v1.read_namespaced_deployment(name=service, namespace=namespace)
