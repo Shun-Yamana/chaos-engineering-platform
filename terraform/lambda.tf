@@ -182,6 +182,7 @@ resource "aws_iam_policy" "lambda_auto_stopper_policy" {
           aws_dynamodb_table.slo_definitions.arn,
           aws_dynamodb_table.sli_metrics.arn,
           aws_dynamodb_table.experiment_history.arn,
+          "${aws_dynamodb_table.experiment_history.arn}/index/*",
         ]
       },
       {
@@ -369,6 +370,7 @@ resource "aws_lambda_function" "experiment_evaluator" {
       EXPERIMENT_TABLE   = aws_dynamodb_table.experiment_history.name
       ALB_ARN_SUFFIX     = data.aws_lb.service_b.arn_suffix
       CW_BUFFER_SECONDS  = "300"
+      SLACK_WEBHOOK_URL  = var.slack_webhook_url
     }
   }
 

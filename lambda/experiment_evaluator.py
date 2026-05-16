@@ -10,6 +10,7 @@ import json
 import time
 import boto3
 import logging
+import urllib.request
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 
@@ -21,8 +22,17 @@ dynamodb = boto3.resource("dynamodb")
 
 EXPERIMENT_TABLE = os.environ["EXPERIMENT_TABLE"]
 ALB_ARN_SUFFIX = os.environ.get("ALB_ARN_SUFFIX", "")
+SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
 # CloudWatch メトリクス遅延バッファ: MAX(TTR=90s) + 3分 = 約 5 分
 _CW_BUFFER_S = int(os.environ.get("CW_BUFFER_SECONDS", "300"))
+
+_FAULT_LABELS = {
+    "pod_kill":          "Pod Kill",
+    "cpu_stress":        "CPU Stress",
+    "memory_stress":     "Memory Stress",
+    "http_error_inject": "HTTP Error Inject",
+    "network_latency":   "Network Latency",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -308,6 +318,102 @@ def evaluate(item: dict) -> dict:
     }
 
 
+def _criterion_line(c: dict) -> str:
+    icon = "✅" if c.get("pass") is True else "❌" if c.get("pass") is False else "➖"
+    label = c["criterion"].replace("_", " ")
+    val = f"{c['value']:.3f}" if c.get("value") is not None else (c.get("note") or "no data")
+    line = f"{icon} {label}: `{val}` {c.get('threshold', '')}"
+    if c.get("ttr_actual_seconds") is not None:
+        line += f"  (TTR {c['ttr_actual_seconds']}s / {c['ttr_limit_seconds']}s)"
+    return line
+
+
+def post_slack_report(item: dict, result: dict):
+    if not SLACK_WEBHOOK_URL:
+        return
+
+    name        = item.get("name") or item["experiment_id"][:8]
+    fault_type  = item.get("fault_type", "unknown")
+    fault_label = _FAULT_LABELS.get(fault_type, fault_type)
+    service     = item.get("target_service", "")
+    duration    = item.get("duration_seconds", "?")
+    exp_id      = item["experiment_id"][:8]
+
+    passed      = result["evaluation_result"] == "pass"
+    result_text = "✅  PASS" if passed else "❌  FAIL"
+    color       = "good" if passed else "danger"
+
+    details     = result.get("evaluation_details", {})
+    phase_a     = details.get("phase_a_absorption", [])
+    phase_b     = details.get("phase_b_recovery", [])
+    safety_net  = details.get("safety_net", {})
+
+    lines_a = "\n".join(_criterion_line(c) for c in phase_a) or "—"
+    lines_b = "\n".join(_criterion_line(c) for c in phase_b) or "—"
+
+    sn_icon    = "✅" if safety_net.get("pass") else "❌"
+    fired      = "fired" if safety_net.get("auto_stopper_fired") else "not fired"
+    expected   = "yes" if safety_net.get("expected") else "no"
+    sn_line    = f"{sn_icon} auto_stopper: {fired}  (expected: {expected})"
+
+    evaluated_at = result.get("evaluated_at", "")[:19].replace("T", " ") + " UTC"
+
+    payload = {
+        "attachments": [
+            {
+                "color": color,
+                "blocks": [
+                    {
+                        "type": "header",
+                        "text": {"type": "plain_text", "text": f"{result_text}  {name}"},
+                    },
+                    {
+                        "type": "section",
+                        "fields": [
+                            {"type": "mrkdwn", "text": f"*Fault*\n{fault_label}"},
+                            {"type": "mrkdwn", "text": f"*Service*\n{service}"},
+                            {"type": "mrkdwn", "text": f"*Duration*\n{duration}s"},
+                            {"type": "mrkdwn", "text": f"*ID*\n`{exp_id}`"},
+                        ],
+                    },
+                    {"type": "divider"},
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": f"*Phase A — Absorb / Contain*\n{lines_a}"},
+                    },
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": f"*Phase B — Recovery / TTR*\n{lines_b}"},
+                    },
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": f"*Safety Net*\n{sn_line}"},
+                    },
+                    {
+                        "type": "context",
+                        "elements": [
+                            {"type": "mrkdwn", "text": f"Evaluated at {evaluated_at}"}
+                        ],
+                    },
+                ],
+            }
+        ]
+    }
+
+    data = json.dumps(payload).encode("utf-8")
+    req  = urllib.request.Request(
+        SLACK_WEBHOOK_URL,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            logger.info(f"Slack report sent: HTTP {resp.status}")
+    except Exception as exc:
+        logger.warning(f"Slack notification failed: {exc}")
+
+
 def write_evaluation(experiment_id: str, started_at: str, result: dict):
     table = dynamodb.Table(EXPERIMENT_TABLE)
 
@@ -385,5 +491,6 @@ def handler(event, context):
             "experiment_id": experiment_id,
             "evaluation_result": result["evaluation_result"],
         }))
+        post_slack_report(item, result)
 
     return {"statusCode": 200}
