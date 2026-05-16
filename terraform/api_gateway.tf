@@ -98,7 +98,10 @@ resource "aws_apigatewayv2_api" "chaos" {
 
   # CORS (ADR 018: フロントエンドからのブラウザリクエストに必要)
   cors_configuration {
-    allow_origins = [var.frontend_url]
+    allow_origins = [
+      "http://localhost:5173",
+      "https://${aws_cloudfront_distribution.frontend.domain_name}",
+    ]
     allow_methods = ["GET", "POST", "DELETE", "OPTIONS"]
     allow_headers = ["Content-Type", "Authorization"]
     max_age       = 3600

@@ -46,8 +46,14 @@ resource "aws_cognito_user_pool_client" "this" {
   allowed_oauth_scopes                 = ["openid", "email"]
   supported_identity_providers         = ["COGNITO"]
 
-  callback_urls = [var.frontend_url, "http://localhost:5173"]
-  logout_urls   = [var.frontend_url, "http://localhost:5173"]
+  callback_urls = [
+    "http://localhost:5173",
+    "https://${aws_cloudfront_distribution.frontend.domain_name}",
+  ]
+  logout_urls = [
+    "http://localhost:5173",
+    "https://${aws_cloudfront_distribution.frontend.domain_name}",
+  ]
 
   access_token_validity  = 1
   id_token_validity      = 1

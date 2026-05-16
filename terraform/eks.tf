@@ -25,17 +25,32 @@ resource "null_resource" "patch_coredns_fargate" {
     cluster_endpoint = module.eks.cluster_endpoint
   }
 
+  # Windows cmd では bash の until/sleep が使えないため PowerShell で記述。
+  # Fargate scheduler は EKS cluster 作成直後に起動完了しておらず、
+  # 最初の rollout restart で pod に toleration が注入されないことがある。
+  # Running になるまで 30 秒ごとに rollout restart を繰り返すことで確実にスケジューリングする。
   provisioner "local-exec" {
-    command = <<-EOT
+    interpreter = ["PowerShell", "-Command"]
+    command     = <<-EOT
       aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.aws_region}
-      echo "Waiting for coredns deployment to appear..."
-      until kubectl get deployment coredns -n kube-system >/dev/null 2>&1; do
-        echo "coredns deployment not yet available, retrying in 15s..."
-        sleep 15
-      done
-      kubectl patch deployment coredns -n kube-system --type json \
-        -p '[{"op":"remove","path":"/spec/template/metadata/annotations/eks.amazonaws.com~1compute-type"}]' || true
-      kubectl rollout status deployment/coredns -n kube-system --timeout=300s || true
+      Write-Host "Waiting for coredns deployment to appear..."
+      $deadline = (Get-Date).AddMinutes(5)
+      while (-not (kubectl get deployment coredns -n kube-system 2>$null) -and (Get-Date) -lt $deadline) {
+        Write-Host "coredns deployment not yet available, retrying in 15s..."
+        Start-Sleep -Seconds 15
+      }
+      kubectl patch deployment coredns -n kube-system --type json `
+        -p '[{"op":"remove","path":"/spec/template/metadata/annotations/eks.amazonaws.com~1compute-type"}]'
+      kubectl rollout restart deployment/coredns -n kube-system
+      Write-Host "Waiting for coredns pods to become Running (Fargate scheduler startup)..."
+      $deadline = (Get-Date).AddMinutes(15)
+      while ((Get-Date) -lt $deadline) {
+        $phase = kubectl get pods -n kube-system -l k8s-app=kube-dns -o jsonpath='{.items[0].status.phase}' 2>$null
+        if ($phase -eq 'Running') { Write-Host "coredns Running."; break }
+        Write-Host "coredns still Pending, restarting to re-trigger Fargate scheduler..."
+        kubectl rollout restart deployment/coredns -n kube-system
+        Start-Sleep -Seconds 30
+      }
     EOT
   }
 
@@ -78,10 +93,11 @@ resource "null_resource" "restart_coredns_after_addon" {
   }
 
   provisioner "local-exec" {
-    command = <<-EOT
+    interpreter = ["PowerShell", "-Command"]
+    command     = <<-EOT
       aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.aws_region}
-      kubectl patch deployment coredns -n kube-system --type json \
-        -p '[{"op":"remove","path":"/spec/template/metadata/annotations/eks.amazonaws.com~1compute-type"}]' || true
+      kubectl patch deployment coredns -n kube-system --type json `
+        -p '[{"op":"remove","path":"/spec/template/metadata/annotations/eks.amazonaws.com~1compute-type"}]'
       kubectl rollout restart deployment/coredns -n kube-system
       kubectl rollout status deployment/coredns -n kube-system --timeout=300s
     EOT
@@ -148,17 +164,25 @@ resource "null_resource" "apply_ingress" {
   }
 
   provisioner "local-exec" {
-    command = <<-EOT
+    interpreter = ["PowerShell", "-Command"]
+    command     = <<-EOT
       aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.aws_region}
       kubectl apply -f ${path.module}/../k8s/ingress.yaml
-      echo "Waiting for ALB to be provisioned..."
-      until kubectl get ingress service-b -n default -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null | grep -q amazonaws; do
-        echo "ALB not yet ready, waiting 15s..."
-        sleep 15
-      done
-      ALB_DNS=$(kubectl get ingress service-b -n default -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-      echo "ALB provisioned: $ALB_DNS"
-      kubectl set env deployment/chaos-agent -n chaos SERVICE_B_URL="http://$ALB_DNS/items/1" || true
+      Write-Host "Waiting for ALB to be provisioned..."
+      $deadline = (Get-Date).AddMinutes(10)
+      $albDns = ""
+      while ((Get-Date) -lt $deadline) {
+        $albDns = kubectl get ingress service-b -n default -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>$null
+        if ($albDns -like "*amazonaws*") { break }
+        Write-Host "ALB not yet ready, waiting 15s..."
+        Start-Sleep -Seconds 15
+      }
+      if ($albDns -like "*amazonaws*") {
+        Write-Host "ALB provisioned: $albDns"
+        kubectl set env deployment/chaos-agent -n chaos "SERVICE_B_URL=http://$albDns/items/1"
+      } else {
+        Write-Host "WARNING: ALB not provisioned within timeout"
+      }
     EOT
   }
 
