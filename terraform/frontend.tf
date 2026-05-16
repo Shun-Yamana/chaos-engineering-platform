@@ -42,6 +42,36 @@ resource "aws_cloudfront_distribution" "frontend" {
     origin_access_control_id = aws_cloudfront_origin_access_control.frontend.id
   }
 
+  origin {
+    origin_id   = "alb-service-b"
+    domain_name = data.aws_lb.service_b.dns_name
+
+    custom_origin_config {
+      http_port              = 80
+      https_port             = 443
+      origin_protocol_policy = "http-only"
+      origin_ssl_protocols   = ["TLSv1.2"]
+      origin_read_timeout    = 30
+    }
+
+    custom_header {
+      name  = "X-Origin-Verify"
+      value = random_password.cloudfront_origin_secret.result
+    }
+  }
+
+  # /aggregate/* → service-a (同一オリジンで CORS 不要)
+  ordered_cache_behavior {
+    path_pattern             = "/aggregate/*"
+    target_origin_id         = "alb-service-b"
+    viewer_protocol_policy   = "redirect-to-https"
+    allowed_methods          = ["GET", "HEAD", "OPTIONS"]
+    cached_methods           = ["GET", "HEAD"]
+    compress                 = true
+    cache_policy_id          = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" # CachingDisabled
+    origin_request_policy_id = "216adef6-5c7f-47e4-b989-5492eafa07d3" # AllViewer
+  }
+
   default_cache_behavior {
     target_origin_id           = "s3-frontend"
     viewer_protocol_policy     = "redirect-to-https"

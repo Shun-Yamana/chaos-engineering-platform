@@ -10,14 +10,24 @@ import psutil
 import httpx
 from fastapi import FastAPI, HTTPException
 
+from fastapi.middleware.cors import CORSMiddleware
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="service-a")
 
+_CORS_ORIGINS = [o for o in os.getenv("CORS_ORIGINS", "").split(",") if o]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_CORS_ORIGINS or ["*"],
+    allow_methods=["GET"],
+    allow_headers=["*"],
+)
+
 SERVICE_B_INTERNAL_URL = os.getenv("SERVICE_B_INTERNAL_URL", "http://service-b:8000")
 _AGGREGATE_TIMEOUT_S = 0.3   # 300ms: slightly above Envoy's 200ms timeout
-_STALE_CACHE_TTL_S = 30.0
+_STALE_CACHE_TTL_S = 60.0   # 60s: covers 30s traffic interval with margin
 
 # {item_id: (response_dict, timestamp)}
 _stale_cache: dict[int, tuple[dict, float]] = {}
@@ -232,51 +242,31 @@ async def aggregate(item_id: int):
     最大 2 リトライ（指数バックオフ + jitter）。
     """
     start = monotonic()
-    circuit_open = False
 
-    for attempt in range(3):  # attempt 0, 1, 2 (= 1 initial + 2 retries)
-        if attempt > 0:
-            # 指数バックオフ + jitter: 50ms, 100ms + ±20ms
-            delay = 0.05 * (2 ** (attempt - 1)) + random.uniform(0, 0.02)
-            await asyncio.sleep(delay)
-
-        try:
-            async with httpx.AsyncClient(timeout=_AGGREGATE_TIMEOUT_S) as client:
-                resp = await client.get(
-                    f"{SERVICE_B_INTERNAL_URL}/data/{item_id}"
-                )
-                resp.raise_for_status()
-                data = resp.json()
-
-            # Success: update stale cache
-            _stale_cache[item_id] = (data, monotonic())
-            duration_ms = (monotonic() - start) * 1000
-            _emit_aggregate_emf(duration_ms, fallback=False, circuit_open=False)
-            return data
-
-        except httpx.TimeoutException:
-            logger.debug(f"[aggregate/{item_id}] attempt {attempt}: timeout")
-
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 503:
-                # Envoy が upstream を eject 済み (outlier detection 発動)
-                circuit_open = True
-                logger.debug(f"[aggregate/{item_id}] Envoy upstream ejected (circuit open)")
-                break  # リトライ不要: Envoy が eject している間は全試行が 503
-            logger.debug(f"[aggregate/{item_id}] attempt {attempt}: HTTP {e.response.status_code}")
-
-        except httpx.RequestError as e:
-            logger.debug(f"[aggregate/{item_id}] attempt {attempt}: request error: {e}")
-
-    # リトライ全滅 → stale cache フォールバック
-    cached = _stale_cache.get(item_id)
-    if cached and (monotonic() - cached[1]) < _STALE_CACHE_TTL_S:
+    # live call 1回だけ試みる（Envoy の 200ms timeout が保護）
+    # 成功: キャッシュ更新して返す
+    # 失敗: stale cache にフォールバック（TTL なし — fault 中は何分経っても stale を返す）
+    try:
+        async with httpx.AsyncClient(timeout=_AGGREGATE_TIMEOUT_S) as client:
+            resp = await client.get(f"{SERVICE_B_INTERNAL_URL}/data/{item_id}")
+            resp.raise_for_status()
+            data = resp.json()
+        _stale_cache[item_id] = (data, monotonic())
         duration_ms = (monotonic() - start) * 1000
-        _emit_aggregate_emf(duration_ms, fallback=True, circuit_open=circuit_open)
-        return {**cached[0], "_stale": True, "_circuit_open": circuit_open}
+        _emit_aggregate_emf(duration_ms, fallback=False, circuit_open=False)
+        return data
+    except Exception:
+        pass
+
+    # live 失敗 → stale cache（age 問わず返す: fault 期間中はキャッシュが唯一の防衛線）
+    cached = _stale_cache.get(item_id)
+    if cached:
+        duration_ms = (monotonic() - start) * 1000
+        _emit_aggregate_emf(duration_ms, fallback=True, circuit_open=False)
+        return {**cached[0], "_stale": True, "_circuit_open": False}
 
     duration_ms = (monotonic() - start) * 1000
-    _emit_aggregate_emf(duration_ms, fallback=False, circuit_open=circuit_open)
+    _emit_aggregate_emf(duration_ms, fallback=False, circuit_open=False)
     raise HTTPException(status_code=502, detail="service-b unavailable and no stale cache")
 
 

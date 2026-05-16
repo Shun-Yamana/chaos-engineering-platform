@@ -6,23 +6,32 @@ interface Props {
   onStarted: () => void
 }
 
-const SERVICES = ["service-a", "service-b"]
+const SERVICES = ["service-b"]
 
 const FAULT_META: Record<string, { label: string; desc: string; icon: string; accent: string; border: string }> = {
   pod_kill:          { label: "Pod Kill",      desc: "Force-terminates a running pod",      icon: "✂",  accent: "text-red-600",    border: "border-red-300 bg-red-50"    },
   cpu_stress:        { label: "CPU Stress",    desc: "Saturates CPU in the container",      icon: "⚡", accent: "text-orange-600", border: "border-orange-300 bg-orange-50" },
   memory_stress:     { label: "Memory Stress", desc: "Exhausts available pod memory",       icon: "▣",  accent: "text-purple-600", border: "border-purple-300 bg-purple-50" },
   http_error_inject: { label: "HTTP Error",    desc: "Returns 5xx at configurable rate",    icon: "⚠",  accent: "text-yellow-600", border: "border-yellow-300 bg-yellow-50" },
-  network_latency:   { label: "Net Latency",   desc: "Injects delay via AWS FIS",           icon: "⏱", accent: "text-blue-600",   border: "border-blue-300 bg-blue-50"   },
+  network_latency:   { label: "Net Latency",   desc: "Injects delay via env var patch",     icon: "⏱", accent: "text-blue-600",   border: "border-blue-300 bg-blue-50"   },
+}
+
+// Deployment パッチ系は Fargate rolling update (~90s) 分の余裕が必要
+const DEFAULT_DURATION: Record<string, number> = {
+  pod_kill:          60,
+  cpu_stress:        300,
+  memory_stress:     300,
+  http_error_inject: 300,
+  network_latency:   300,
 }
 
 export function ExperimentForm({ onBack: _onBack, onStarted }: Props) {
   const [form, setForm] = useState({
     name: "",
-    service: "service-a",
+    service: "service-b",
     namespace: "default",
     fault_type: "network_latency",
-    duration: 60,
+    duration: DEFAULT_DURATION["network_latency"],
     latency_ms: 500,
     fault_rate: 0.5,
     error_rate_threshold: 0.05,
@@ -32,7 +41,11 @@ export function ExperimentForm({ onBack: _onBack, onStarted }: Props) {
   const [error, setError] = useState("")
 
   const set = (key: string, value: string | number) =>
-    setForm(f => ({ ...f, [key]: value }))
+    setForm(f => ({
+      ...f,
+      [key]: value,
+      ...(key === "fault_type" && { duration: DEFAULT_DURATION[value as string] ?? 300 }),
+    }))
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()

@@ -173,7 +173,7 @@ export function ExperimentDetail({ experimentId, onBack: _onBack, onStopped }: P
               ...(exp.stopped_at  ? [["Stopped",      fmt(exp.stopped_at)]]             : []),
               ...(exp.stop_reason ? [["Stop Reason",  exp.stop_reason]]                 : []),
               ...(exp.latency_ms  != null ? [["Latency",     `${exp.latency_ms}ms`]]    : []),
-              ...(exp.fault_rate  != null ? [["Fault Rate",  `${(exp.fault_rate * 100).toFixed(0)}%`]] : []),
+              ...(exp.fault_rate  != null ? [["Fault Rate",  `${(Number(exp.fault_rate) * 100).toFixed(0)}%`]] : []),
             ].map(([k, v]) => (
               <tr key={k} className="border-b border-slate-100 last:border-0">
                 <td className="px-4 py-2.5 text-slate-500 text-xs w-36">{k}</td>
@@ -315,13 +315,13 @@ function EvaluationCard({ exp }: { exp: Experiment }) {
               {exp.final_error_rate != null && (
                 <div className="flex justify-between text-xs py-1">
                   <span className="text-slate-500">Error Rate</span>
-                  <span className="font-mono text-slate-700">{(exp.final_error_rate * 100).toFixed(2)}%</span>
+                  <span className="font-mono text-slate-700">{(Number(exp.final_error_rate) * 100).toFixed(2)}%</span>
                 </div>
               )}
               {exp.final_burn_rate != null && (
                 <div className="flex justify-between text-xs py-1">
                   <span className="text-slate-500">Burn Rate</span>
-                  <span className="font-mono text-slate-700">{exp.final_burn_rate.toFixed(2)}×</span>
+                  <span className="font-mono text-slate-700">{Number(exp.final_burn_rate).toFixed(2)}×</span>
                 </div>
               )}
             </div>

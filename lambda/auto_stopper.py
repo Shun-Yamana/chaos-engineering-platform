@@ -53,12 +53,14 @@ def get_running_experiments(service: str) -> list:
     return resp.get("Items", [])
 
 
-def stop_experiment(experiment: dict, reason: str, final_error_rate: float | None = None, final_burn_rate: float | None = None):
+def trigger_emergency_stop(experiment: dict, reason: str, final_error_rate: float | None = None, final_burn_rate: float | None = None):
+    """SLO 違反時に emergency_stop フラグを立てる。実験自体は止めない。
+    chaos-agent がフラグを検知してサービスを scale-to-0 で保護し、自動回復する。"""
     table = dynamodb.Table(EXPERIMENT_TABLE)
     now = datetime.now(timezone.utc).isoformat()
 
-    update_expr = "SET #st = :stopped, stopped_at = :now, stop_reason = :reason"
-    values = {":stopped": "stopped", ":now": now, ":reason": reason}
+    update_expr = "SET emergency_stop = :es, emergency_stop_at = :now, stop_reason = :reason"
+    values = {":es": True, ":now": now, ":reason": reason}
 
     if final_error_rate is not None:
         update_expr += ", final_error_rate = :fer"
@@ -73,11 +75,10 @@ def stop_experiment(experiment: dict, reason: str, final_error_rate: float | Non
             "started_at": experiment["started_at"],
         },
         UpdateExpression=update_expr,
-        ExpressionAttributeNames={"#st": "status"},
         ExpressionAttributeValues=values,
     )
     logger.info(json.dumps({
-        "action": "experiment_stopped",
+        "action": "emergency_stop_triggered",
         "experiment_id": experiment["experiment_id"],
         "reason": reason,
     }))
@@ -150,7 +151,9 @@ def handler(event, context):
 
         experiments = get_running_experiments(service)
         for experiment in experiments:
-            stop_experiment(experiment, reason, final_error_rate=error_rate, final_burn_rate=burn_rate)
+            if experiment.get("emergency_stop"):
+                continue  # 既にフラグ立て済み
+            trigger_emergency_stop(experiment, reason, final_error_rate=error_rate, final_burn_rate=burn_rate)
             publish_alert(service, sli, slo, experiment["experiment_id"], reason)
             stopped.append(experiment["experiment_id"])
 

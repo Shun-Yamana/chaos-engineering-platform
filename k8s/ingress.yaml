@@ -11,6 +11,9 @@ metadata:
     alb.ingress.kubernetes.io/scheme: internet-facing
     alb.ingress.kubernetes.io/target-type: ip
 
+    # ALB に固定タグを付与することで data "aws_lb" がタグ検索で一意に特定できる
+    alb.ingress.kubernetes.io/tags: "Project=chaos-platform,Component=service-b-alb"
+
     # ALB 本体属性
     alb.ingress.kubernetes.io/load-balancer-attributes: "access_logs.s3.enabled=true,access_logs.s3.bucket=chaos-platform-alb-logs-203553641035,access_logs.s3.prefix=service-b,connection_logs.s3.enabled=true,connection_logs.s3.bucket=chaos-platform-alb-logs-203553641035,connection_logs.s3.prefix=service-b,routing.http.drop_invalid_header_fields.enabled=true"
 
@@ -31,10 +34,18 @@ metadata:
 
     # CloudFront origin 認証: X-Origin-Verify ヘッダーがない場合はルーティングしない
     alb.ingress.kubernetes.io/conditions.service-b: '[{"field":"http-header","httpHeaderConfig":{"httpHeaderName":"X-Origin-Verify","values":["fLORutDU9AqgI2QQl5tbQspmOYRZdSIi"]}}]'
+    alb.ingress.kubernetes.io/conditions.service-a: '[{"field":"http-header","httpHeaderConfig":{"httpHeaderName":"X-Origin-Verify","values":["fLORutDU9AqgI2QQl5tbQspmOYRZdSIi"]}}]'
 spec:
   rules:
     - http:
         paths:
+          - path: /aggregate
+            pathType: Prefix
+            backend:
+              service:
+                name: service-a
+                port:
+                  number: 80
           - path: /
             pathType: Prefix
             backend:

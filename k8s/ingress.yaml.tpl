@@ -34,10 +34,18 @@ metadata:
 
     # CloudFront origin 認証: X-Origin-Verify ヘッダーがない場合はルーティングしない
     alb.ingress.kubernetes.io/conditions.service-b: '[{"field":"http-header","httpHeaderConfig":{"httpHeaderName":"X-Origin-Verify","values":["${origin_secret}"]}}]'
+    alb.ingress.kubernetes.io/conditions.service-a: '[{"field":"http-header","httpHeaderConfig":{"httpHeaderName":"X-Origin-Verify","values":["${origin_secret}"]}}]'
 spec:
   rules:
     - http:
         paths:
+          - path: /aggregate
+            pathType: Prefix
+            backend:
+              service:
+                name: service-a
+                port:
+                  number: 80
           - path: /
             pathType: Prefix
             backend:

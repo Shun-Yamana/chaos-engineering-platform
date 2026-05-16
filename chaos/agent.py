@@ -41,7 +41,7 @@ class Experiment:
     started_at: str | None = None
     latency_ms: int = 500
     fault_rate: float = 0.5
-    memory_stress_mb: int = 256
+    memory_stress_mb: int = 150
 
 
 class ChaosAgent:
@@ -53,6 +53,7 @@ class ChaosAgent:
 
         self.core_v1 = client.CoreV1Api()
         self.apps_v1 = client.AppsV1Api()
+        self.networking_v1 = client.NetworkingV1Api()
 
     def _get_pods(self, namespace: str, service: str) -> list:
         pods = self.core_v1.list_namespaced_pod(
@@ -67,19 +68,18 @@ class ChaosAgent:
         expires_at = int((datetime.now(timezone.utc) + timedelta(days=30)).timestamp())
 
         if status == "running":
-            # 初回作成: put_item でレコードを生成する
-            item = {
-                "experiment_id": experiment.experiment_id,
-                "started_at": experiment.started_at or now,
-                "name": experiment.name,
-                "target_service": experiment.service,
-                "namespace": experiment.namespace,
-                "fault_type": experiment.fault_type,
-                "duration_seconds": experiment.duration_seconds,
-                "status": status,
-                "expires_at": expires_at,
-            }
-            table.put_item(Item=item)
+            # _claim() が既に pending→running へ update_item しているため put_item は不要。
+            # update_item で status/expires_at だけ更新することで
+            # api_handler が書いた latency_ms, fault_rate 等のフィールドを保持する。
+            table.update_item(
+                Key={
+                    "experiment_id": experiment.experiment_id,
+                    "started_at": experiment.started_at or now,
+                },
+                UpdateExpression="SET #st = :status, expires_at = :exp",
+                ExpressionAttributeNames={"#st": "status"},
+                ExpressionAttributeValues={":status": status, ":exp": expires_at},
+            )
         else:
             # 終端状態: update_item で auto_stopper が書いた emergency_stop 等を保持する
             update_expr = "SET #st = :status, expires_at = :exp"
@@ -400,7 +400,7 @@ def _item_to_experiment(item: dict) -> Experiment:
         started_at=item.get("started_at"),
         latency_ms=int(item.get("latency_ms", 500)),
         fault_rate=float(item.get("fault_rate", 0.5)),
-        memory_stress_mb=int(item.get("memory_stress_mb", 256)),
+        memory_stress_mb=int(item.get("memory_stress_mb", 150)),
     )
 
 
@@ -507,10 +507,10 @@ class TrafficGenerator:
             time.sleep(self._interval)
 
 
-def _discover_service_b_url(core_v1) -> str | None:
+def _discover_service_b_url(networking_v1) -> str | None:
     """Ingress の ALB ホスト名から service-b URL を自動検出する。SERVICE_B_URL 未設定時のフォールバック。"""
     try:
-        ingress = core_v1.read_namespaced_ingress(name="service-b", namespace="default")
+        ingress = networking_v1.read_namespaced_ingress(name="service-b", namespace="default")
         lb = ingress.status.load_balancer
         if lb and lb.ingress:
             hostname = lb.ingress[0].hostname
@@ -527,11 +527,14 @@ if __name__ == "__main__":
 
     chaos_agent = ChaosAgent()
 
-    service_b_url = os.environ.get("SERVICE_B_URL")
-    if not service_b_url:
-        service_b_url = _discover_service_b_url(chaos_agent.core_v1)
+    # Ingress を常に優先参照。ALB 再作成で env var が古くなるため env var は最終フォールバックのみ。
+    service_b_url = _discover_service_b_url(chaos_agent.networking_v1)
+    if service_b_url:
+        logger.info(f"service-b URL from Ingress: {service_b_url}")
+    else:
+        service_b_url = os.environ.get("SERVICE_B_URL")
         if service_b_url:
-            logger.info(f"Auto-discovered service-b URL from Ingress: {service_b_url}")
+            logger.info(f"service-b URL from env (fallback): {service_b_url}")
 
     traffic_interval = int(os.environ.get("TRAFFIC_GEN_INTERVAL", "30"))
     origin_secret = os.environ.get("ALB_ORIGIN_SECRET", "")

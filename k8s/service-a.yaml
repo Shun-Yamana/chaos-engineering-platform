@@ -48,6 +48,8 @@ spec:
               value: "0.0"
             - name: SERVICE_B_INTERNAL_URL
               value: "http://localhost:9001"
+            - name: CORS_ORIGINS
+              value: "https://d36zpc4drlt9c4.cloudfront.net,http://localhost:5173"
           lifecycle:
             preStop:
               exec:
