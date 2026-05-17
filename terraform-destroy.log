@@ -1,0 +1,14 @@
+02:25:04  destroy スクリプト起動
+╷
+│ Error: Too many command line arguments
+│ 
+│ Expected at most one positional argument.
+╵
+╷
+│ Error: Invalid target "module"
+│ 
+│ Prefix "module." must be followed by a module name.
+╵
+
+For more help on using this command, run:
+  terraform destroy -help

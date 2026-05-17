@@ -179,7 +179,8 @@ resource "null_resource" "apply_ingress" {
       }
       if ($albDns -like "*amazonaws*") {
         Write-Host "ALB provisioned: $albDns"
-        kubectl set env deployment/chaos-agent -n chaos "SERVICE_B_URL=http://$albDns/items/1"
+        kubectl set env deployment/chaos-agent -n chaos "SERVICE_B_URL=http://$albDns/items/1" 2>&1 | Write-Host
+        $global:LASTEXITCODE = 0
       } else {
         Write-Host "WARNING: ALB not provisioned within timeout"
       }

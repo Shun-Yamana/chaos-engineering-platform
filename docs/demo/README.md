@@ -1,7 +1,6 @@
 # Chaos Engineering Platform — デモ資料
 
-> CyberAgent 選考用ポートフォリオ  
-> 2026-05 時点: 実験 5 本すべて PASS 済み
+
 
 ---
 
@@ -13,7 +12,7 @@
 4. [実験一覧と評価結果](#4-実験一覧と評価結果)
 5. [デモ手順](#5-デモ手順)
 
-> **スクリーンショットの配置先**: `docs/demo/screenshots/` に下記ファイル名で置くと画像が表示されます。
+
 
 ---
 
@@ -21,7 +20,7 @@
 
 **「本番さながらのカオスエンジニアリング基盤を 1 人で設計・実装・運用まで完結させた」**
 
-![アーキテクチャ全体図](./screenshots/architecture-overview.png)
+![アーキテクチャ全体図](docs\.$architecture-overview.drawio.bkp)
 
 ### コンポーネント構成
 
@@ -72,13 +71,13 @@
 
 ### 実験一覧画面
 
-![実験一覧](./screenshots/experiment-list.png)
+![実験一覧](.docs\photo\スクリーンショット 2026-05-18 011645.png)
 
 ### 新規実験フォーム
 
-![フォーム上部（フォルトタイプ選択）](./screenshots/new-experiment-form-top.png)
+![フォーム上部（フォルトタイプ選択）](.docs\photo\スクリーンショット 2026-05-18 005505.png)
 
-![フォーム下部（パラメータ・SLO 閾値・実行）](./screenshots/new-experiment-form-bottom.png)
+![フォーム下部（パラメータ・SLO 閾値・実行）](.docs\photo\スクリーンショット 2026-05-18 005545.png)
 
 ---
 
@@ -215,9 +214,9 @@ Phase B（emergency_recover スレッド）:
 
 カオスエンジニアリングの結果がユーザー体験として可視化される唯一の画面。
 
-![商品デモ（正常）](./screenshots/product-demo-fresh.png)
+![商品デモ（正常）](.docs\photo\スクリーンショット 2026-05-18 005642.png)
 
-![商品デモ（Sorry）](./screenshots/product-demo-fallback.png)
+![商品デモ（Sorry）](.docs\photo\スクリーンショット 2026-05-18 035823.png)
 
 ---
 
@@ -235,7 +234,7 @@ Phase B（emergency_recover スレッド）:
 | 実測値 | service-b p95 **995.5ms** ✓ / service-a p95 **220.2ms** ✓ / Phase B **217.9ms** TTR 30s ✓ |
 | 判定 | **PASS** |
 
-![network_latency PASS](./screenshots/network-latency-pass.png)
+![network_latency PASS](docs\photo\スクリーンショット 2026-05-18 033618.png)
 
 ---
 
@@ -251,7 +250,7 @@ Phase B（emergency_recover スレッド）:
 | 実測値 | Phase A error_rate **0.000** ✓ / Phase B **0.000** TTR 30s ✓ |
 | 判定 | **PASS** |
 
-![pod_kill PASS](./screenshots/pod-kill-pass.png)
+![pod_kill PASS](.docs\photo\スクリーンショット 2026-05-18 010411.png)
 
 ---
 
@@ -267,7 +266,7 @@ Phase B（emergency_recover スレッド）:
 | 実測値 | Phase A p95 **527.9ms** ✓ / Phase B **478.4ms** TTR 30s ✓ |
 | 判定 | **PASS** |
 
-![cpu_stress PASS](./screenshots/cpu-stress-pass.png)
+![cpu_stress PASS](.docs\photo\スクリーンショット 2026-05-18 020132.png)
 
 ---
 
@@ -283,7 +282,7 @@ Phase B（emergency_recover スレッド）:
 | 実測値 | Phase A error_rate **0.000** ✓ / Phase B **0.000** TTR 30s ✓ |
 | 判定 | **PASS** |
 
-![memory_stress PASS](./screenshots/memory-stress-pass.png)
+![memory_stress PASS](.docs\photo\スクリーンショット 2026-05-18 022233.png)
 
 ---
 
@@ -300,7 +299,7 @@ Phase B（emergency_recover スレッド）:
 | 実測値 | origin error_rate **0.125** ✓ / auto_stopper **300.9s** ✓ / Phase B **0.000** TTR 30s ✓ |
 | 判定 | **PASS** |
 
-![http_error_inject PASS](./screenshots/http-error-inject-pass.png)
+![http_error_inject PASS](.docs\photo\スクリーンショット 2026-05-18 032449.png)
 
 ---
 
@@ -314,72 +313,3 @@ Phase B（emergency_recover スレッド）:
 | memory_stress | ✓ error 0.000 ≤ 0.05 | ✓ 0.000 TTR 30s | — | **PASS** |
 | http_error_inject | ✓ error 0.125 ≥ 0.05 | ✓ 0.000 TTR 30s | ✓ auto_stopper 300s | **PASS** |
 
----
-
-## 5. デモ手順
-
-> **前提**: `terraform apply` 済み・ECR push 済み・k8s マニフェスト適用済み  
-> **URL**: CloudFront ドメイン（`terraform output cloudfront_domain` で確認）  
-> **ログイン**: demo@chaos-platform.local / ChaosP1atf0rm#2026
-
-### Step 1: アーキテクチャを説明する（2 分）
-
-1. 構成図（`docs/architecture-overview.drawio`）を開いて俯瞰を示す
-2. 「service-b に障害を注入し、service-a が Envoy 経由でどう吸収するかを測定する」
-
-### Step 2: 実験一覧画面を見せる（1 分）
-
-1. フロントエンドにアクセス → Cognito ログイン
-2. 実験一覧を表示（過去の PASS 結果が並んでいる）
-3. 統計カード（Completed / Failed の件数）を示す
-
-### Step 3: 新規実験を作成して実行する（3 分）
-
-1. 「New Experiment」をクリック
-2. fault_type: `network_latency`、duration: 180s、intensity: 500ms を入力
-3. SLO 閾値（p95 ≤ 250ms）を確認して「Start」
-4. ステータスが `running` → `completed` に変わるのを待つ
-
-### Step 4: 評価結果を確認する（2 分）
-
-1. 実験カードをクリック → 詳細画面
-2. Phase A / Phase B / Safety Net の数値を読み上げ
-3. `evaluation_result: PASS` が表示されていることを示す
-
-### Step 5: 商品デモで UX への影響を見せる（2 分）
-
-1. 商品詳細ページ（`/products/1`）を表示
-2. 正常時: `source: fresh`、商品情報が表示されている
-3. 障害注入中に同じページを開く → `source: fallback`、Sorry Page 表示
-4. 「システム状態がユーザー体験に直結している」を説明
-
-### Step 6: 設計判断を語る（質疑応答）
-
-よく聞かれる質問と回答の準備:
-
-| 質問 | 回答のポイント |
-|---|---|
-| なぜ Envoy を使ったか？ | service-a のコード変更なしで circuit breaker / retry / timeout を実装できるから（ADR 006） |
-| stale cache の判断基準は？ | 「古いデータを返す」vs「404 を返す」でユーザー体験が異なる。EC サイトなら古い価格表示のほうがマシ（ADR 007） |
-| 合格基準の数値はどう決めた？ | Envoy の設定値（timeout 200ms）から逆算して 250ms と決定。数値に根拠がある（ADR 009） |
-| ADR を 049 本書いた理由は？ | 「なぜそう決めたか」がないと再現も説明もできない。設計者として説明責任を果たすため |
-
----
-
-## 付録: スクリーンショット一覧
-
-配置するファイル名と内容の対応表:
-
-| ファイル名 | 内容 |
-|---|---|
-| `architecture-overview.png` | アーキテクチャ全体図（draw.io エクスポート） |
-| `experiment-list.png` | 統計カード + 実験カードリスト |
-| `new-experiment-form-top.png` | フォルトタイプ選択カード |
-| `new-experiment-form-bottom.png` | パラメータ + SLO 閾値 + Start ボタン |
-| `network-latency-pass.png` | Phase A: 995.5ms / 220.2ms / Phase B: 217.9ms TTR 30s |
-| `pod-kill-pass.png` | Phase A: 0.000 / Phase B: 0.000 TTR 30s |
-| `cpu-stress-pass.png` | Phase A: 527.9ms / Phase B: 478.4ms TTR 30s |
-| `memory-stress-pass.png` | Phase A: 0.000 / Phase B: 0.000 TTR 30s |
-| `http-error-inject-pass.png` | Phase A: 0.125 / auto_stopper 300.9s / Phase B: 0.000 TTR 30s |
-| `product-demo-fresh.png` | Pro Mechanical Keyboard ¥12,980 表示 |
-| `product-demo-fallback.png` | 🛒 商品情報を一時的に取得できません |

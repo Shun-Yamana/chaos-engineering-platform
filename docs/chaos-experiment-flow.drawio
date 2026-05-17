@@ -1,0 +1,105 @@
+<mxfile host="Electron">
+  <diagram id="qyOVphQYg4S0ctuDf19T" name="ページ-1">
+    <mxGraphModel dx="2095" dy="1368" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="900" pageHeight="1700" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="title" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;fontSize=22;fontStyle=1;fontColor=#1a1a2e;" value="カオス実験フロー" vertex="1">
+          <mxGeometry height="44" width="500" x="200" y="20" as="geometry" />
+        </mxCell>
+        <mxCell id="sec1" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=11;fontStyle=1;fontColor=#6c8ebf;" value="① 実験登録" vertex="1">
+          <mxGeometry height="30" width="120" x="60" y="82" as="geometry" />
+        </mxCell>
+        <mxCell id="sec2" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=11;fontStyle=1;fontColor=#82b366;" value="② フォルト注入" vertex="1">
+          <mxGeometry height="30" width="120" x="60" y="282" as="geometry" />
+        </mxCell>
+        <mxCell id="sec3" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=11;fontStyle=1;fontColor=#d6b656;" value="③ 監視 &amp; 自動停止" vertex="1">
+          <mxGeometry height="30" width="130" x="60" y="562" as="geometry" />
+        </mxCell>
+        <mxCell id="sec4" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=11;fontStyle=1;fontColor=#9673a6;" value="④ 評価" vertex="1">
+          <mxGeometry height="30" width="120" x="60" y="842" as="geometry" />
+        </mxCell>
+        <mxCell id="react1" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" value="&lt;b&gt;React Frontend&lt;/b&gt;&lt;br&gt;「+ New Experiment」で実験パラメータを入力・送信" vertex="1">
+          <mxGeometry height="60" width="340" x="200" y="80" as="geometry" />
+        </mxCell>
+        <mxCell id="e12" edge="1" parent="1" source="react1" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=11;fontColor=#555555;labelBackgroundColor=#ffffff;" target="api_handler" value="POST /experiments">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="api_handler" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d6b656;fontSize=12;" value="&lt;b&gt;API Handler (Lambda)&lt;/b&gt;&lt;br&gt;put_item:  status=&lt;i&gt;pending&lt;/i&gt;, started_at=T₁" vertex="1">
+          <mxGeometry height="60" width="340" x="200" y="200" as="geometry" />
+        </mxCell>
+        <mxCell id="e23" edge="1" parent="1" source="api_handler" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=11;fontColor=#555555;labelBackgroundColor=#ffffff;" target="dynamo_pending" value="put_item">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="dynamo_pending" parent="1" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=10;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=12;" value="&lt;b&gt;DynamoDB  /  experiments&lt;/b&gt;&lt;br&gt;status = pending" vertex="1">
+          <mxGeometry height="70" width="320" x="210" y="320" as="geometry" />
+        </mxCell>
+        <mxCell id="e34" edge="1" parent="1" source="dynamo_pending" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=11;fontColor=#555555;labelBackgroundColor=#ffffff;" target="chaos_agent" value="30秒ポーリング → _claim() で update_item (running)">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="chaos_agent" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" value="&lt;b&gt;chaos-agent  (EKS Fargate)&lt;/b&gt;&lt;br&gt;kubectl set env / scale → フォルト注入&lt;br&gt;トラフィックジェネレータ起動" vertex="1">
+          <mxGeometry height="72" width="340" x="200" y="450" as="geometry" />
+        </mxCell>
+        <mxCell id="e45" edge="1" parent="1" source="chaos_agent" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=11;fontColor=#555555;labelBackgroundColor=#ffffff;" target="service_b" value="環境変数注入 / Pod スケール変更">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="service_b" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=12;" value="&lt;b&gt;service-b  (EKS Fargate)&lt;/b&gt;&lt;br&gt;フォルト注入中（遅延 / HTTP エラー / CPU・メモリ負荷 / Pod 再起動）" vertex="1">
+          <mxGeometry height="60" width="340" x="200" y="582" as="geometry" />
+        </mxCell>
+        <mxCell id="e56" edge="1" parent="1" source="service_b" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=11;fontColor=#555555;labelBackgroundColor=#ffffff;" target="cloudwatch" value="ALB アクセスログ → EMF メトリクス送信">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cloudwatch" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontColor=#333333;fontSize=12;" value="&lt;b&gt;ALB  +  CloudWatch&lt;/b&gt;&lt;br&gt;error_rate  /  p95 latency を 1 分粒度で収集" vertex="1">
+          <mxGeometry height="60" width="340" x="200" y="702" as="geometry" />
+        </mxCell>
+        <mxCell id="auto_stopper" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;align=left;" value="&lt;b&gt;auto_stopper&lt;/b&gt;&lt;br&gt;SLO 違反検知&lt;br&gt;① emergency_stop フラグを DynamoDB に書き込み&lt;br&gt;② _emergency_recover スレッド起動&lt;br&gt;　scale=0 → fault 除去 → 30s 待機 → scale back" vertex="1">
+          <mxGeometry height="102" width="240" x="590" y="680" as="geometry" />
+        </mxCell>
+        <mxCell id="e_cw_as" edge="1" parent="1" source="cloudwatch" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=11;fontColor=#b85450;strokeColor=#b85450;labelBackgroundColor=#ffffff;fontStyle=2;" target="auto_stopper" value="SLO 違反">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e67" edge="1" parent="1" source="cloudwatch" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=11;fontColor=#555555;labelBackgroundColor=#ffffff;" target="dynamo_completed" value="duration 経過後  _record_experiment(completed)">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="dynamo_completed" parent="1" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=10;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=12;" value="&lt;b&gt;DynamoDB  /  experiments&lt;/b&gt;&lt;br&gt;status = completed  |  emergency_stop = true（発動時）" vertex="1">
+          <mxGeometry height="70" width="320" x="210" y="840" as="geometry" />
+        </mxCell>
+        <mxCell id="e_as_db" edge="1" parent="1" source="auto_stopper" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=10;fontColor=#d6b656;strokeColor=#d6b656;labelBackgroundColor=#ffffff;fontStyle=2;" target="dynamo_completed" value="emergency_stop&lt;br&gt;update_item">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="710" y="800" />
+              <mxPoint x="390" y="800" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e78" edge="1" parent="1" source="dynamo_completed" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=11;fontColor=#555555;labelBackgroundColor=#ffffff;" target="evaluator" value="DynamoDB Streams  (5 分バッファ後にトリガー)">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="evaluator" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d6b656;fontSize=12;" value="&lt;b&gt;Evaluator Lambda&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#555555&quot;&gt;Phase A&lt;/font&gt;: フォルト中の吸収・封じ込め（error_rate / p95）&lt;br&gt;&lt;font color=&quot;#555555&quot;&gt;Phase B&lt;/font&gt;: 回復速度・TTR（offset 90〜180 s）&lt;br&gt;&lt;font color=&quot;#555555&quot;&gt;Safety Net&lt;/font&gt;: auto_stopper 発動の期待値チェック" vertex="1">
+          <mxGeometry height="86" width="390" x="175" y="972" as="geometry" />
+        </mxCell>
+        <mxCell id="e_eval_cw" edge="1" parent="1" source="evaluator" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=10;dashed=1;fontColor=#666666;strokeColor=#999999;labelBackgroundColor=#ffffff;exitX=1;exitY=0.5;exitDx=0;exitDy=0;" target="cloudwatch" value="CloudWatch GetMetricStatistics">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="640" y="1015" />
+              <mxPoint x="640" y="732" />
+              <mxPoint x="540" y="732" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e89" edge="1" parent="1" source="evaluator" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=11;fontColor=#555555;labelBackgroundColor=#ffffff;" target="dynamo_result" value="update_item  evaluation_result = PASS / FAIL">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="dynamo_result" parent="1" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=10;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=12;" value="&lt;b&gt;DynamoDB  /  experiments&lt;/b&gt;&lt;br&gt;evaluation_result = PASS / FAIL&lt;br&gt;evaluation_details（Phase A / B / Safety Net 各 criterion）" vertex="1">
+          <mxGeometry height="80" width="320" x="210" y="1120" as="geometry" />
+        </mxCell>
+        <mxCell id="e910" edge="1" parent="1" source="dynamo_result" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=11;fontColor=#555555;labelBackgroundColor=#ffffff;" target="react2" value="1 秒ポーリング">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="react2" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" value="&lt;b&gt;React Frontend&lt;/b&gt;&lt;br&gt;PASS（緑ヘッダー）/ FAIL（赤ヘッダー）&lt;br&gt;+ Phase A / B / Safety Net の criterion 詳細を表示" vertex="1">
+          <mxGeometry height="72" width="340" x="200" y="1262" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
