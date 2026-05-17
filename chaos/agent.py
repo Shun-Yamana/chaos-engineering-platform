@@ -105,21 +105,31 @@ class ChaosAgent:
         return self.apps_v1.read_namespaced_deployment(name=service, namespace=namespace)
 
     def _patch_deployment(self, namespace: str, service: str, deployment):
+        deployment.metadata.resource_version = None  # avoid 409 conflict from concurrent patches
         self.apps_v1.patch_namespaced_deployment(name=service, namespace=namespace, body=deployment)
 
     def _remove_env_var(self, namespace: str, service: str, var_name: str):
-        """replace（PUT）で env var を確実に削除する。strategic merge patch は省略→削除にならないため。"""
-        deployment = self._get_deployment(namespace, service)
-        for container in deployment.spec.template.spec.containers:
-            if container.name == service and container.env:
-                before = len(container.env)
-                container.env = [e for e in container.env if e.name != var_name]
-                if len(container.env) == before:
-                    return  # 存在しなければ何もしない
-                break
-        else:
-            return
-        self.apps_v1.replace_namespaced_deployment(name=service, namespace=namespace, body=deployment)
+        """replace（PUT）で env var を確実に削除する。strategic merge patch は省略→削除にならないため。
+        scale 操作後など concurrent write が発生しやすい文脈では 409 Conflict が起きるため最大 3 回リトライする。"""
+        for _ in range(3):
+            deployment = self._get_deployment(namespace, service)
+            for container in deployment.spec.template.spec.containers:
+                if container.name == service and container.env:
+                    before = len(container.env)
+                    container.env = [e for e in container.env if e.name != var_name]
+                    if len(container.env) == before:
+                        return  # 存在しなければ何もしない
+                    break
+            else:
+                return
+            try:
+                self.apps_v1.replace_namespaced_deployment(name=service, namespace=namespace, body=deployment)
+                return
+            except ApiException as e:
+                if e.status == 409:
+                    logger.warning(f"_remove_env_var 409 conflict for {service}/{var_name}, retrying")
+                    continue
+                raise
 
     # --- pod_kill ---
 

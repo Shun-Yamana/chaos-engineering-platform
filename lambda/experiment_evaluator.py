@@ -203,11 +203,11 @@ def evaluate_memory_stress(fault_start: datetime, fault_end: datetime) -> tuple[
 
 def evaluate_http_error_inject(item: dict, fault_start: datetime, fault_end: datetime) -> tuple[list, list]:
     origin_error_rate = get_alb_error_rate(fault_start, fault_end)
-    # auto_stopper が発動したかは DynamoDB の stop_reason から判断
-    stopped_at = item.get("stopped_at")
-    if stopped_at:
-        stopped_dt = datetime.fromisoformat(stopped_at.replace("Z", "+00:00"))
-        auto_stopper_latency_s = (stopped_dt - fault_start).total_seconds()
+    # emergency_stop_at: auto_stopper が実際に発動した時刻 (stopped_at は実験終了時刻なので不可)
+    emergency_stop_at = item.get("emergency_stop_at")
+    if emergency_stop_at:
+        fired_dt = datetime.fromisoformat(emergency_stop_at.replace("Z", "+00:00"))
+        auto_stopper_latency_s = (fired_dt - fault_start).total_seconds()
     else:
         auto_stopper_latency_s = None
 
@@ -215,7 +215,7 @@ def evaluate_http_error_inject(item: dict, fault_start: datetime, fault_end: dat
         # rolling update で旧 Pod が混在するため全体平均は 30% を下回る。
         # auto_stopper SLI データで 8%+ が確認できる実態に合わせて 5% に緩和
         _check("origin_error_rate", origin_error_rate, ">=", 0.05),
-        # polling interval 10s のズレで 300s を超えることがある → 360s に緩和
+        # CloudWatch ALB メトリクス遅延 (~4min) + rolling update (~90s) を考慮して 360s に緩和
         _check("auto_stopper_fired_within_6min",
                auto_stopper_latency_s, "<=", 360),
     ]

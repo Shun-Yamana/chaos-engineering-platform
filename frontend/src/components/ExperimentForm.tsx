@@ -21,7 +21,7 @@ const DEFAULT_DURATION: Record<string, number> = {
   pod_kill:          60,
   cpu_stress:        300,
   memory_stress:     300,
-  http_error_inject: 300,
+  http_error_inject: 600,
   network_latency:   300,
 }
 

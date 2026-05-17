@@ -82,7 +82,7 @@ spec:
             - name: TRAFFIC_GEN_INTERVAL
               value: "30"
             - name: ALB_ORIGIN_SECRET
-              value: fLORutDU9AqgI2QQl5tbQspmOYRZdSIi
+              value: BnN7Ehj3Uc2xCgN7SXl87nsy7hqq7s5V
             - name: SERVICE_A_AGGREGATE_URL
               value: "http://service-a.default/aggregate/1"
           resources:
