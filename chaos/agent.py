@@ -114,6 +114,34 @@ class ChaosAgent:
     def _get_deployment(self, namespace: str, service: str):
         return self.apps_v1.read_namespaced_deployment(name=service, namespace=namespace)
 
+    def _set_experiment_id(self, namespace: str, service: str, experiment_id: str):
+        """X-Ray アノテーション用に EXPERIMENT_ID を Deployment env にセットする"""
+        deployment = self._get_deployment(namespace, service)
+        for container in deployment.spec.template.spec.containers:
+            if container.name == service:
+                if container.env is None:
+                    container.env = []
+                container.env = [e for e in container.env if e.name != "EXPERIMENT_ID"]
+                container.env.append(client.V1EnvVar(name="EXPERIMENT_ID", value=experiment_id))
+                break
+        deployment.metadata.resource_version = None
+        self.apps_v1.patch_namespaced_deployment(name=service, namespace=namespace, body=deployment)
+        logger.info(f"EXPERIMENT_ID={experiment_id} set on {service}")
+
+    def _clear_experiment_id(self, namespace: str, service: str):
+        """実験終了後に EXPERIMENT_ID env var を削除する"""
+        deployment = self._get_deployment(namespace, service)
+        for container in deployment.spec.template.spec.containers:
+            if container.name == service and container.env:
+                before = len(container.env)
+                container.env = [e for e in container.env if e.name != "EXPERIMENT_ID"]
+                if len(container.env) == before:
+                    return
+                break
+        deployment.metadata.resource_version = None
+        self.apps_v1.patch_namespaced_deployment(name=service, namespace=namespace, body=deployment)
+        logger.info(f"EXPERIMENT_ID cleared on {service}")
+
     # ---------------------------------------------------------------------------
     # FIS helpers
     # ---------------------------------------------------------------------------
@@ -307,13 +335,33 @@ class ChaosAgent:
 
         try:
             if experiment.fault_type == "http_error_inject":
+                for svc in ("service-a", "service-b"):
+                    try:
+                        self._set_experiment_id(experiment.namespace, svc, experiment.experiment_id)
+                    except Exception as e:
+                        logger.warning(f"[{experiment.experiment_id}] EXPERIMENT_ID patch failed on {svc}: {e}")
+
                 self.http_error_inject(experiment)
                 completed = self._interruptible_sleep(experiment, experiment.duration_seconds)
                 self.http_error_remove(experiment)
+
+                for svc in ("service-a", "service-b"):
+                    try:
+                        self._clear_experiment_id(experiment.namespace, svc)
+                    except Exception as e:
+                        logger.warning(f"[{experiment.experiment_id}] EXPERIMENT_ID clear failed on {svc}: {e}")
+
                 if not completed:
                     return
 
             elif experiment.fault_type in ("pod_kill", "cpu_stress", "memory_stress", "network_latency"):
+                # X-Ray アノテーション用に EXPERIMENT_ID を service-a / service-b にセット
+                for svc in ("service-a", "service-b"):
+                    try:
+                        self._set_experiment_id(experiment.namespace, svc, experiment.experiment_id)
+                    except Exception as e:
+                        logger.warning(f"[{experiment.experiment_id}] EXPERIMENT_ID patch failed on {svc}: {e}")
+
                 template_id = self._get_fis_template_id(experiment)
                 fis_exp_id = self._fis_start_experiment(template_id, experiment.experiment_id)
                 self._active_fis[experiment.experiment_id] = fis_exp_id
@@ -321,6 +369,12 @@ class ChaosAgent:
 
                 result = self._fis_wait_and_monitor(fis_exp_id, experiment)
                 self._active_fis.pop(experiment.experiment_id, None)
+
+                for svc in ("service-a", "service-b"):
+                    try:
+                        self._clear_experiment_id(experiment.namespace, svc)
+                    except Exception as e:
+                        logger.warning(f"[{experiment.experiment_id}] EXPERIMENT_ID clear failed on {svc}: {e}")
 
                 if result == "failed":
                     raise RuntimeError(f"FIS experiment {fis_exp_id} failed")

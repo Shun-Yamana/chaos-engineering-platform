@@ -8,9 +8,13 @@ import threading
 from time import monotonic
 import psutil
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 
 from fastapi.middleware.cors import CORSMiddleware
+from aws_xray_sdk.core import xray_recorder, patch_all
+from aws_xray_sdk.ext.fastapi import XRayMiddleware
+
+patch_all()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -24,6 +28,18 @@ app.add_middleware(
     allow_methods=["GET"],
     allow_headers=["*"],
 )
+app.add_middleware(XRayMiddleware, recorder=xray_recorder)
+
+
+@app.middleware("http")
+async def _annotate_experiment_id(request: Request, call_next):
+    exp_id = os.getenv("EXPERIMENT_ID", "")
+    if exp_id:
+        try:
+            xray_recorder.put_annotation("experiment_id", exp_id)
+        except Exception:
+            pass
+    return await call_next(request)
 
 SERVICE_B_INTERNAL_URL = os.getenv("SERVICE_B_INTERNAL_URL", "http://service-b:8000")
 _AGGREGATE_TIMEOUT_S = 0.3   # 300ms: slightly above Envoy's 200ms timeout
@@ -110,7 +126,7 @@ def _emit_product_aggregate_emf(
             "Timestamp": int(time.time() * 1000),
             "CloudWatchMetrics": [{
                 "Namespace": "ChaosExperiment",
-                "Dimensions": [["Service"]],
+                "Dimensions": [["Service"], ["Service", "ExperimentId"]],
                 "Metrics": [
                     {"Name": "AggregateDurationMs",   "Unit": "Milliseconds"},
                     {"Name": "ServiceBCallDurationMs", "Unit": "Milliseconds"},
@@ -121,6 +137,7 @@ def _emit_product_aggregate_emf(
             }],
         },
         "Service": "service-a",
+        "ExperimentId": os.getenv("EXPERIMENT_ID", "none"),
         "AggregateDurationMs": round(a_ms, 2),
         "ServiceBCallDurationMs": round(b_ms, 2) if b_ms is not None else 0,
         "FallbackCount": 1 if source == "fallback" else 0,
@@ -199,7 +216,7 @@ def _emit_aggregate_emf(duration_ms: float, fallback: bool, circuit_open: bool):
             "Timestamp": int(time.time() * 1000),
             "CloudWatchMetrics": [{
                 "Namespace": "ChaosExperiment",
-                "Dimensions": [["Service"]],
+                "Dimensions": [["Service"], ["Service", "ExperimentId"]],
                 "Metrics": [
                     {"Name": "AggregateDurationMs", "Unit": "Milliseconds"},
                     {"Name": "FallbackCount", "Unit": "Count"},
@@ -208,6 +225,7 @@ def _emit_aggregate_emf(duration_ms: float, fallback: bool, circuit_open: bool):
             }],
         },
         "Service": "service-a",
+        "ExperimentId": os.getenv("EXPERIMENT_ID", "none"),
         "AggregateDurationMs": round(duration_ms, 2),
         "FallbackCount": 1 if fallback else 0,
         "CircuitBreakerState": 1 if circuit_open else 0,
