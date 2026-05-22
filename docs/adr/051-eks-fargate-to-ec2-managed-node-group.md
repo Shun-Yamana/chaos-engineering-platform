@@ -6,7 +6,7 @@
 ## Context
 
 本プラットフォームはこれまで EKS Fargate（サーバーレス）でワークロードを動かしていた。
-Day 1〜3 スプリントで X-Ray DaemonSet・Prometheus Node Exporter の追加と、FIS によるカーネルレベル障害注入を実現するにあたり、Fargate の制約が複数の阻害要因になった。
+X-Ray DaemonSet・Prometheus Node Exporter の追加と、FIS によるカーネルレベル障害注入を実現するにあたり、Fargate の制約が複数の阻害要因になった。
 
 **Fargate の制約**
 

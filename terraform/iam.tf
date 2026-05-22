@@ -377,3 +377,87 @@ resource "aws_iam_role_policy" "sns_feedback_logs" {
     }]
   })
 }
+
+# ---------------------------------------------------------------------------
+# Grafana IRSA — CloudWatch + X-Ray 読み取り (ADR 053)
+# ---------------------------------------------------------------------------
+
+data "aws_iam_policy_document" "grafana_assume_role" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [module.eks.oidc_provider_arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${module.eks.oidc_provider}:sub"
+      values   = ["system:serviceaccount:monitoring:grafana"]
+    }
+  }
+}
+
+resource "aws_iam_role" "grafana" {
+  name               = "${var.project_name}-grafana"
+  assume_role_policy = data.aws_iam_policy_document.grafana_assume_role.json
+  tags               = local.common_tags
+}
+
+resource "aws_iam_role_policy" "grafana_cloudwatch_xray" {
+  name = "cloudwatch-xray-read"
+  role = aws_iam_role.grafana.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "CloudWatchRead"
+        Effect = "Allow"
+        Action = [
+          "cloudwatch:DescribeAlarmsForMetric",
+          "cloudwatch:DescribeAlarmHistory",
+          "cloudwatch:DescribeAlarms",
+          "cloudwatch:ListMetrics",
+          "cloudwatch:GetMetricData",
+          "cloudwatch:GetInsightRuleReport",
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "CloudWatchLogsRead"
+        Effect = "Allow"
+        Action = [
+          "logs:DescribeLogGroups",
+          "logs:DescribeLogStreams",
+          "logs:GetLogEvents",
+          "logs:StartQuery",
+          "logs:StopQuery",
+          "logs:GetQueryResults",
+          "logs:GetLogGroupFields",
+          "logs:FilterLogEvents",
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "XRayRead"
+        Effect = "Allow"
+        Action = [
+          "xray:GetSamplingRules",
+          "xray:GetSamplingTargets",
+          "xray:GetGroups",
+          "xray:GetGroup",
+          "xray:ListTagsForResource",
+          "xray:GetTraceSummaries",
+          "xray:BatchGetTraces",
+          "xray:GetServiceGraph",
+          "xray:GetTraceGraph",
+          "xray:GetTimeSeriesServiceStatistics",
+        ]
+        Resource = "*"
+      },
+    ]
+  })
+}

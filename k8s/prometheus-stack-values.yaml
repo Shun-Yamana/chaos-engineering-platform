@@ -1,6 +1,9 @@
 grafana:
   enabled: true
   adminPassword: ""  # Secrets Manager から手動設定 or helm --set で注入
+  serviceAccount:
+    annotations:
+      eks.amazonaws.com/role-arn: "${grafana_irsa_role_arn}"  # terraform output grafana_irsa_role_arn
   service:
     type: ClusterIP  # ALB Ingress Controller 経由でアクセス
   persistence:

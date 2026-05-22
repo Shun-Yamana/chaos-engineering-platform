@@ -48,3 +48,8 @@ output "ecr_chaos_agent_url" {
   description = "ECR repository URL for chaos-agent"
   value       = aws_ecr_repository.chaos_agent.repository_url
 }
+
+output "grafana_irsa_role_arn" {
+  description = "IAM Role ARN for Grafana IRSA (set in prometheus-stack-values.yaml)"
+  value       = aws_iam_role.grafana.arn
+}
