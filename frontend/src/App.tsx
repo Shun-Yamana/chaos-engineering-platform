@@ -74,6 +74,19 @@ export default function App() {
           >
             Experiments
           </button>
+          {import.meta.env.VITE_GRAFANA_URL && (
+            <a
+              href={import.meta.env.VITE_GRAFANA_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs text-slate-400 hover:text-white px-3 py-1.5 rounded-md hover:bg-slate-800 transition-colors flex items-center gap-1"
+            >
+              Grafana
+              <svg className="w-2.5 h-2.5 opacity-60" fill="none" viewBox="0 0 10 10" stroke="currentColor" strokeWidth={1.5}>
+                <path d="M1 9L9 1M9 1H3M9 1v6" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+            </a>
+          )}
           <button
             onClick={signOut}
             className="text-xs text-slate-400 hover:text-white px-3 py-1.5 rounded-md hover:bg-slate-800 transition-colors"
