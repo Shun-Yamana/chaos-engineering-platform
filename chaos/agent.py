@@ -335,7 +335,7 @@ class ChaosAgent:
 
         try:
             if experiment.fault_type == "http_error_inject":
-                for svc in ("service-a", "service-b"):
+                for svc in ("service-a", "service-b", "service-c", "service-d"):
                     try:
                         self._set_experiment_id(experiment.namespace, svc, experiment.experiment_id)
                     except Exception as e:
@@ -345,7 +345,7 @@ class ChaosAgent:
                 completed = self._interruptible_sleep(experiment, experiment.duration_seconds)
                 self.http_error_remove(experiment)
 
-                for svc in ("service-a", "service-b"):
+                for svc in ("service-a", "service-b", "service-c", "service-d"):
                     try:
                         self._clear_experiment_id(experiment.namespace, svc)
                     except Exception as e:
@@ -355,8 +355,8 @@ class ChaosAgent:
                     return
 
             elif experiment.fault_type in ("pod_kill", "cpu_stress", "memory_stress", "network_latency"):
-                # X-Ray アノテーション用に EXPERIMENT_ID を service-a / service-b にセット
-                for svc in ("service-a", "service-b"):
+                # X-Ray アノテーション用に EXPERIMENT_ID を全サービスにセット
+                for svc in ("service-a", "service-b", "service-c", "service-d"):
                     try:
                         self._set_experiment_id(experiment.namespace, svc, experiment.experiment_id)
                     except Exception as e:
@@ -370,7 +370,7 @@ class ChaosAgent:
                 result = self._fis_wait_and_monitor(fis_exp_id, experiment)
                 self._active_fis.pop(experiment.experiment_id, None)
 
-                for svc in ("service-a", "service-b"):
+                for svc in ("service-a", "service-b", "service-c", "service-d"):
                     try:
                         self._clear_experiment_id(experiment.namespace, svc)
                     except Exception as e:

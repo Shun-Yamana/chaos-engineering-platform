@@ -59,6 +59,38 @@ resource "aws_ecr_lifecycle_policy" "service_b" {
   policy     = local.ecr_lifecycle_policy
 }
 
+resource "aws_ecr_repository" "service_c" {
+  name                 = "${var.project_name}/service-c"
+  image_tag_mutability = "MUTABLE"
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  tags = local.common_tags
+}
+
+resource "aws_ecr_lifecycle_policy" "service_c" {
+  repository = aws_ecr_repository.service_c.name
+  policy     = local.ecr_lifecycle_policy
+}
+
+resource "aws_ecr_repository" "service_d" {
+  name                 = "${var.project_name}/service-d"
+  image_tag_mutability = "MUTABLE"
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  tags = local.common_tags
+}
+
+resource "aws_ecr_lifecycle_policy" "service_d" {
+  repository = aws_ecr_repository.service_d.name
+  policy     = local.ecr_lifecycle_policy
+}
+
 resource "aws_ecr_repository" "chaos_agent" {
   name                 = "${var.project_name}/chaos-agent"
   image_tag_mutability = "MUTABLE"

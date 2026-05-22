@@ -213,11 +213,74 @@
       }
     },
     {
+      "id": 9,
+      "title": "service-c ReviewService p95 (ms)",
+      "description": "service-c の /reviews エンドポイント p95 レイテンシ（service-b から呼ばれる直列チェーン）",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 32},
+      "datasource": {"type": "cloudwatch", "uid": "CloudWatch"},
+      "targets": [
+        {
+          "refId": "A",
+          "region": "ap-northeast-1",
+          "namespace": "ChaosExperiment",
+          "metricName": "ResponseTimeMs",
+          "dimensions": {"Service": "service-c"},
+          "statistics": ["p95"],
+          "period": "60",
+          "alias": "p95"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "ms"}}
+    },
+    {
+      "id": 10,
+      "title": "service-d InventoryService p95 (ms)",
+      "description": "service-d の /inventory エンドポイント p95 レイテンシ（service-a から並行呼び出し）",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 32},
+      "datasource": {"type": "cloudwatch", "uid": "CloudWatch"},
+      "targets": [
+        {
+          "refId": "A",
+          "region": "ap-northeast-1",
+          "namespace": "ChaosExperiment",
+          "metricName": "ResponseTimeMs",
+          "dimensions": {"Service": "service-d"},
+          "statistics": ["p95"],
+          "period": "60",
+          "alias": "p95"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "ms"}}
+    },
+    {
+      "id": 11,
+      "title": "Inventory Unavailable Count",
+      "description": "service-d が応答できず在庫情報が欠落したリクエスト数（service-a の CB fallback）",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 40},
+      "datasource": {"type": "cloudwatch", "uid": "CloudWatch"},
+      "targets": [
+        {
+          "refId": "A",
+          "region": "ap-northeast-1",
+          "namespace": "ChaosExperiment",
+          "metricName": "InventoryUnavailableCount",
+          "dimensions": {"Service": "service-a"},
+          "statistics": ["Sum"],
+          "period": "60",
+          "alias": "Inventory Unavailable"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}}
+    },
+    {
       "id": 7,
       "title": "Node CPU / Memory",
       "description": "EC2 ノードの CPU 使用率とメモリ空き率",
       "type": "timeseries",
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 40},
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
       "targets": [
         {
@@ -240,7 +303,7 @@
       "title": "X-Ray Service Map",
       "description": "service-a → Envoy → service-b の分散トレースグラフ",
       "type": "nodeGraph",
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 48},
       "datasource": {"type": "grafana-x-ray-datasource", "uid": "X-Ray"},
       "targets": [
         {

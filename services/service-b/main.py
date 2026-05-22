@@ -32,6 +32,10 @@ async def _annotate_experiment_id(request: Request, call_next):
     return await call_next(request)
 
 SERVICE_A_URL = os.getenv("SERVICE_A_URL", "http://service-a/")
+SERVICE_C_INTERNAL_URL = os.getenv("SERVICE_C_INTERNAL_URL", "http://service-c:8000")
+
+# service-c (レビュー要約) のタイムアウト: 非クリティカルなため短めに設定
+_REVIEW_TIMEOUT_S = 0.1  # 100ms: 超過時は reviews=null でレスポンスを返す
 
 PRODUCTS = {
     "p-001": {
@@ -215,9 +219,22 @@ async def get_data(item_id: int):
     return result
 
 
+async def _fetch_reviews(product_id: str) -> dict | None:
+    """service-c からレビュー要約・レコメンドを取得する。失敗時は None を返す（非クリティカル）。"""
+    try:
+        async with httpx.AsyncClient(timeout=_REVIEW_TIMEOUT_S) as client:
+            resp = await client.get(f"{SERVICE_C_INTERNAL_URL}/reviews/{product_id}")
+            resp.raise_for_status()
+            return {**resp.json(), "_source": "fresh"}
+    except Exception:
+        return None
+
+
 @app.get("/products/{product_id}")
 async def get_product(product_id: str):
-    """商品詳細プロバイダ。レビュー要約・レコメンド理由など重いデータを返すため遅延が発生しやすい。"""
+    """商品詳細プロバイダ。service-c を呼び出してレビュー要約を付与して返す。
+    service-c が応答しない場合は reviews=null で 200 を返す（部分劣化）。
+    """
     t0 = time.monotonic()
 
     if random.random() < _fault_rate():
@@ -232,9 +249,12 @@ async def get_product(product_id: str):
     if not product:
         raise HTTPException(status_code=404, detail=f"product {product_id} not found")
 
+    # service-c (レビュー要約) を並行取得 — タイムアウト or 障害時は None
+    reviews = await _fetch_reviews(product_id)
+
     response_ms = (time.monotonic() - t0) * 1000
     _emit_product_emf(response_ms, injected_ms=ms, fault=False)
-    return product
+    return {**product, "reviews": reviews}
 
 
 @app.get("/")
