@@ -39,6 +39,14 @@ data:
                       cluster: service_b_cluster
                       timeout: 0.2s   # 200ms: service-a /aggregate の保護閾値
               http_filters:
+              - name: envoy.filters.http.fault
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.filters.http.fault.v3.HTTPFault
+                  abort:
+                    http_status: 500
+                    percentage:
+                      numerator: 0
+                      denominator: HUNDRED
               - name: envoy.filters.http.router
                 typed_config:
                   "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router

@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import logging
 import threading
@@ -44,6 +45,20 @@ class Experiment:
     memory_stress_mb: int = 150
 
 
+# fault_type → FIS テンプレート ID の環境変数名マッピング
+_FIS_TEMPLATE_ENV = {
+    "pod_kill":       "FIS_TEMPLATE_POD_KILL",
+    "cpu_stress":     "FIS_TEMPLATE_CPU_STRESS",
+    "memory_stress":  "FIS_TEMPLATE_MEMORY_STRESS",
+}
+_NETWORK_LATENCY_TEMPLATE_ENV = {
+    "service-a": "FIS_TEMPLATE_SERVICE_A",
+    "service-b": "FIS_TEMPLATE_SERVICE_B",
+}
+
+_FIS_TERMINAL_STATES = {"completed", "stopped", "failed"}
+
+
 class ChaosAgent:
     def __init__(self, kubeconfig_path: str | None = None):
         if kubeconfig_path:
@@ -54,13 +69,12 @@ class ChaosAgent:
         self.core_v1 = client.CoreV1Api()
         self.apps_v1 = client.AppsV1Api()
         self.networking_v1 = client.NetworkingV1Api()
-
-    def _get_pods(self, namespace: str, service: str) -> list:
-        pods = self.core_v1.list_namespaced_pod(
-            namespace=namespace,
-            label_selector=f"app={service}",
+        self.fis = boto3.client(
+            "fis",
+            region_name=os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION")),
         )
-        return [p for p in pods.items if p.status.phase == "Running"]
+        # 実行中の FIS 実験 ID を保持 (experiment_id → fis_experiment_id)
+        self._active_fis: dict[str, str] = {}
 
     def _record_experiment(self, experiment: Experiment, status: str, stop_reason: str = ""):
         table = dynamodb.Table(experiment.experiment_table)
@@ -68,9 +82,6 @@ class ChaosAgent:
         expires_at = int((datetime.now(timezone.utc) + timedelta(days=30)).timestamp())
 
         if status == "running":
-            # _claim() が既に pending→running へ update_item しているため put_item は不要。
-            # update_item で status/expires_at だけ更新することで
-            # api_handler が書いた latency_ms, fault_rate 等のフィールドを保持する。
             table.update_item(
                 Key={
                     "experiment_id": experiment.experiment_id,
@@ -81,7 +92,6 @@ class ChaosAgent:
                 ExpressionAttributeValues={":status": status, ":exp": expires_at},
             )
         else:
-            # 終端状態: update_item で auto_stopper が書いた emergency_stop 等を保持する
             update_expr = "SET #st = :status, expires_at = :exp"
             names = {"#st": "status"}
             values = {":status": status, ":exp": expires_at}
@@ -104,149 +114,164 @@ class ChaosAgent:
     def _get_deployment(self, namespace: str, service: str):
         return self.apps_v1.read_namespaced_deployment(name=service, namespace=namespace)
 
-    def _patch_deployment(self, namespace: str, service: str, deployment):
-        deployment.metadata.resource_version = None  # avoid 409 conflict from concurrent patches
-        self.apps_v1.patch_namespaced_deployment(name=service, namespace=namespace, body=deployment)
+    # ---------------------------------------------------------------------------
+    # FIS helpers
+    # ---------------------------------------------------------------------------
 
-    def _remove_env_var(self, namespace: str, service: str, var_name: str):
-        """replace（PUT）で env var を確実に削除する。strategic merge patch は省略→削除にならないため。
-        scale 操作後など concurrent write が発生しやすい文脈では 409 Conflict が起きるため最大 3 回リトライする。"""
-        for _ in range(3):
-            deployment = self._get_deployment(namespace, service)
-            for container in deployment.spec.template.spec.containers:
-                if container.name == service and container.env:
-                    before = len(container.env)
-                    container.env = [e for e in container.env if e.name != var_name]
-                    if len(container.env) == before:
-                        return  # 存在しなければ何もしない
-                    break
-            else:
-                return
-            try:
-                self.apps_v1.replace_namespaced_deployment(name=service, namespace=namespace, body=deployment)
-                return
-            except ApiException as e:
-                if e.status == 409:
-                    logger.warning(f"_remove_env_var 409 conflict for {service}/{var_name}, retrying")
-                    continue
-                raise
+    def _get_fis_template_id(self, experiment: Experiment) -> str:
+        if experiment.fault_type == "network_latency":
+            env_key = _NETWORK_LATENCY_TEMPLATE_ENV.get(experiment.service, "")
+        else:
+            env_key = _FIS_TEMPLATE_ENV.get(experiment.fault_type, "")
 
-    # --- pod_kill ---
+        if not env_key:
+            raise ValueError(f"No FIS template mapping for fault_type={experiment.fault_type}")
 
-    def pod_kill(self, experiment: Experiment):
-        logger.info(f"[{experiment.experiment_id}] pod_kill: service={experiment.service}")
+        template_id = os.environ.get(env_key, "")
+        if not template_id:
+            raise RuntimeError(f"Environment variable {env_key} is not set")
+        return template_id
 
-        pods = self._get_pods(experiment.namespace, experiment.service)
-        if not pods:
-            raise RuntimeError(f"No running pods found for service={experiment.service}")
+    def _fis_start_experiment(self, template_id: str, experiment_id: str) -> str:
+        resp = self.fis.start_experiment(
+            experimentTemplateId=template_id,
+            tags={"experiment_id": experiment_id},
+        )
+        return resp["experiment"]["id"]
 
-        pod_name = pods[0].metadata.name
+    def _fis_wait_and_monitor(self, fis_exp_id: str, experiment: Experiment) -> str:
+        """FIS 実験の完了を待機しつつ DynamoDB の停止フラグを監視する。
+        戻り値: "completed" | "stopped" | "failed"
+        """
+        table = dynamodb.Table(experiment.experiment_table)
+        _emergency_triggered = False
+
+        while True:
+            time.sleep(10)
+
+            resp = self.fis.get_experiment(id=fis_exp_id)
+            state = resp["experiment"]["state"]["status"]
+
+            if state in _FIS_TERMINAL_STATES:
+                logger.info(f"[{experiment.experiment_id}] FIS experiment {state}: {fis_exp_id}")
+                return state
+
+            item = table.get_item(Key={
+                "experiment_id": experiment.experiment_id,
+                "started_at": experiment.started_at,
+            }).get("Item", {})
+
+            if item.get("status") == "stopped":
+                logger.info(f"[{experiment.experiment_id}] external stop detected, stopping FIS")
+                try:
+                    self.fis.stop_experiment(id=fis_exp_id)
+                except Exception as e:
+                    logger.warning(f"[{experiment.experiment_id}] FIS stop error: {e}")
+                return "stopped"
+
+            if item.get("emergency_stop") and not _emergency_triggered:
+                _emergency_triggered = True
+                threading.Thread(
+                    target=self._emergency_recover_fis,
+                    args=(fis_exp_id, experiment),
+                    daemon=True,
+                    name=f"emergency-{experiment.experiment_id[:8]}",
+                ).start()
+
+    def _emergency_recover_fis(self, fis_exp_id: str, experiment: Experiment):
+        """FIS 管理実験の緊急回復: FIS 停止で障害注入を即時解除"""
         try:
-            self.core_v1.delete_namespaced_pod(
-                name=pod_name,
-                namespace=experiment.namespace,
-                body=client.V1DeleteOptions(grace_period_seconds=0),
-            )
-        except ApiException as e:
-            if e.status != 404:
-                raise
-            logger.warning(f"[{experiment.experiment_id}] pod already gone: {pod_name}")
+            self.fis.stop_experiment(id=fis_exp_id)
+            logger.info(f"[{experiment.experiment_id}] emergency: FIS experiment stopped")
+        except Exception as e:
+            logger.error(f"[{experiment.experiment_id}] emergency_recover_fis failed: {e}")
 
-        logger.info(f"[{experiment.experiment_id}] killed pod: {pod_name}")
+    # ---------------------------------------------------------------------------
+    # http_error_inject — Envoy HTTP fault filter (FIS未対応)
+    # ---------------------------------------------------------------------------
 
-    # --- cpu_stress ---
-    # EKS Fargate はエフェメラルコンテナ非対応のため、
-    # Deployment の CPU_STRESS 環境変数でアプリレベル CPU 負荷を注入する。
+    def _patch_envoy_fault(self, namespace: str, numerator: int):
+        """envoy-service-b-egress ConfigMap の fault filter percentage を更新する"""
+        cm = self.core_v1.read_namespaced_config_map(
+            name="envoy-service-b-egress", namespace=namespace
+        )
+        new_yaml = re.sub(
+            r"(numerator:\s*)\d+",
+            rf"\g<1>{numerator}",
+            cm.data["envoy.yaml"],
+            count=1,
+        )
+        cm.data["envoy.yaml"] = new_yaml
+        self.core_v1.patch_namespaced_config_map(
+            name="envoy-service-b-egress", namespace=namespace, body=cm
+        )
+        logger.info(f"envoy fault filter patched: numerator={numerator}")
 
-    def cpu_stress_inject(self, experiment: Experiment):
-        deployment = self._get_deployment(experiment.namespace, experiment.service)
-
-        for container in deployment.spec.template.spec.containers:
-            if container.name == experiment.service:
-                if container.env is None:
-                    container.env = []
-                container.env = [e for e in container.env if e.name != "CPU_STRESS"]
-                container.env.append(client.V1EnvVar(name="CPU_STRESS", value="true"))
-                break
-
-        self._patch_deployment(experiment.namespace, experiment.service, deployment)
-        logger.info(f"[{experiment.experiment_id}] CPU_STRESS=true patched")
-
-    def cpu_stress_remove(self, experiment: Experiment):
-        self._remove_env_var(experiment.namespace, experiment.service, "CPU_STRESS")
-        logger.info(f"[{experiment.experiment_id}] CPU_STRESS removed")
-
-    # --- memory_stress ---
-    # EKS Fargate はエフェメラルコンテナ非対応のため、
-    # Deployment の MEMORY_STRESS_MB 環境変数でアプリレベルメモリ確保を注入する。
-
-    def memory_stress_inject(self, experiment: Experiment):
-        deployment = self._get_deployment(experiment.namespace, experiment.service)
-
-        for container in deployment.spec.template.spec.containers:
-            if container.name == experiment.service:
-                if container.env is None:
-                    container.env = []
-                container.env = [e for e in container.env if e.name != "MEMORY_STRESS_MB"]
-                container.env.append(client.V1EnvVar(name="MEMORY_STRESS_MB", value=str(experiment.memory_stress_mb)))
-                break
-
-        self._patch_deployment(experiment.namespace, experiment.service, deployment)
-        logger.info(f"[{experiment.experiment_id}] MEMORY_STRESS_MB={experiment.memory_stress_mb} patched")
-
-    def memory_stress_remove(self, experiment: Experiment):
-        self._remove_env_var(experiment.namespace, experiment.service, "MEMORY_STRESS_MB")
-        logger.info(f"[{experiment.experiment_id}] MEMORY_STRESS_MB removed")
-
-    # --- http_error_inject ---
+    def _rollout_restart(self, namespace: str, service: str):
+        """Deployment を rolling restart して新 ConfigMap を反映する"""
+        now = datetime.now(timezone.utc).isoformat()
+        self.apps_v1.patch_namespaced_deployment(
+            name=service,
+            namespace=namespace,
+            body={"spec": {"template": {"metadata": {"annotations": {"kubectl.kubernetes.io/restartedAt": now}}}}},
+        )
 
     def http_error_inject(self, experiment: Experiment):
-        deployment = self._get_deployment(experiment.namespace, experiment.service)
-
-        for container in deployment.spec.template.spec.containers:
-            if container.name == experiment.service:
-                if container.env is None:
-                    container.env = []
-                container.env = [e for e in container.env if e.name != "FAULT_RATE"]
-                container.env.append(client.V1EnvVar(name="FAULT_RATE", value=str(experiment.fault_rate)))
-                break
-
-        self._patch_deployment(experiment.namespace, experiment.service, deployment)
-        logger.info(f"[{experiment.experiment_id}] FAULT_RATE={experiment.fault_rate} patched")
+        numerator = int(experiment.fault_rate * 100)
+        self._patch_envoy_fault(experiment.namespace, numerator)
+        self._rollout_restart(experiment.namespace, "service-a")
+        # Envoy ローリング再起動が完了するまで待機 (~30s, ADR 055)
+        time.sleep(35)
+        logger.info(f"[{experiment.experiment_id}] Envoy fault filter active: {numerator}% errors")
 
     def http_error_remove(self, experiment: Experiment):
-        self._remove_env_var(experiment.namespace, experiment.service, "FAULT_RATE")
-        logger.info(f"[{experiment.experiment_id}] FAULT_RATE removed")
+        self._patch_envoy_fault(experiment.namespace, 0)
+        self._rollout_restart(experiment.namespace, "service-a")
+        logger.info(f"[{experiment.experiment_id}] Envoy fault filter disabled")
 
-    # --- network_latency ---
-    # EKS Fargate は tc netem に必要な NET_ADMIN を禁止しており、
-    # aws:eks:pod-network-latency も Fargate 非対応のため、
-    # Deployment の LATENCY_MS 環境変数でアプリレベル遅延を注入する。
+    def _emergency_recover(self, experiment: Experiment):
+        """http_error_inject の自己防衛: scale-to-0 で即断ち切り → fault 除去 → 自動回復"""
+        namespace = experiment.namespace
+        service = experiment.service
+        original_replicas = 2
+        try:
+            deployment = self._get_deployment(namespace, service)
+            original_replicas = deployment.spec.replicas or 2
 
-    def network_latency_inject(self, experiment: Experiment):
-        deployment = self._get_deployment(experiment.namespace, experiment.service)
+            self.apps_v1.patch_namespaced_deployment_scale(
+                name=service, namespace=namespace,
+                body={"spec": {"replicas": 0}},
+            )
+            logger.info(f"[{experiment.experiment_id}] emergency: {service} scaled to 0 — sorry page active")
 
-        for container in deployment.spec.template.spec.containers:
-            if container.name == experiment.service:
-                if container.env is None:
-                    container.env = []
-                container.env = [e for e in container.env if e.name != "LATENCY_MS"]
-                container.env.append(client.V1EnvVar(name="LATENCY_MS", value=str(experiment.latency_ms)))
-                break
+            self.http_error_remove(experiment)
 
-        self._patch_deployment(experiment.namespace, experiment.service, deployment)
-        logger.info(f"[{experiment.experiment_id}] LATENCY_MS={experiment.latency_ms} patched")
+            logger.info(f"[{experiment.experiment_id}] emergency: holding scale=0 for 30s")
+            time.sleep(30)
 
-    def network_latency_remove(self, experiment: Experiment):
-        self._remove_env_var(experiment.namespace, experiment.service, "LATENCY_MS")
-        logger.info(f"[{experiment.experiment_id}] LATENCY_MS removed")
+            self.apps_v1.patch_namespaced_deployment_scale(
+                name=service, namespace=namespace,
+                body={"spec": {"replicas": original_replicas}},
+            )
+            logger.info(f"[{experiment.experiment_id}] emergency: {service} scaled back to {original_replicas} — recovering")
 
-    # --- run / stop ---
+        except Exception as e:
+            logger.error(f"[{experiment.experiment_id}] emergency_recover failed: {e}")
+            try:
+                self.apps_v1.patch_namespaced_deployment_scale(
+                    name=service, namespace=namespace,
+                    body={"spec": {"replicas": original_replicas}},
+                )
+            except Exception:
+                pass
+
+    # ---------------------------------------------------------------------------
+    # run / stop
+    # ---------------------------------------------------------------------------
 
     def _interruptible_sleep(self, experiment: Experiment, seconds: int, check_interval: int = 5) -> bool:
-        """duration_seconds 分スリープしつつ DynamoDB を定期確認する。
-        - status=stopped: False を返して早期終了
-        - emergency_stop=true: バックグラウンドで自己防衛を起動し、実験は継続
+        """http_error_inject の duration 監視。FIS 実験は _fis_wait_and_monitor を使う。
+        False を返した場合は呼び出し元が cleanup を行う。
         """
         table = dynamodb.Table(experiment.experiment_table)
         elapsed = 0
@@ -266,7 +291,6 @@ class ChaosAgent:
 
             if item.get("emergency_stop") and not _emergency_triggered:
                 _emergency_triggered = True
-                logger.info(f"[{experiment.experiment_id}] emergency_stop detected — launching self-defense")
                 threading.Thread(
                     target=self._emergency_recover,
                     args=(experiment,),
@@ -276,92 +300,32 @@ class ChaosAgent:
 
         return True
 
-    def _emergency_recover(self, experiment: Experiment):
-        """SLO 違反時の自己防衛: scale-to-0 でユーザーへの障害を即遮断 → fault 除去 → 自動回復"""
-        namespace = experiment.namespace
-        service = experiment.service
-        original_replicas = 2
-        try:
-            deployment = self._get_deployment(namespace, service)
-            original_replicas = deployment.spec.replicas or 2
-
-            # scale to 0: ユーザーへの障害露出を即断ち切る（CloudFront が sorry page を返す）
-            self.apps_v1.patch_namespaced_deployment_scale(
-                name=service, namespace=namespace,
-                body={"spec": {"replicas": 0}},
-            )
-            logger.info(f"[{experiment.experiment_id}] emergency: {service} scaled to 0 — sorry page active")
-
-            # fault 除去（replicas=0 なのでローリング更新なし、即時適用）
-            cleanup = {
-                "cpu_stress": self.cpu_stress_remove,
-                "memory_stress": self.memory_stress_remove,
-                "http_error_inject": self.http_error_remove,
-                "network_latency": self.network_latency_remove,
-            }
-            if experiment.fault_type in cleanup:
-                cleanup[experiment.fault_type](experiment)
-
-            # 30 秒間 sorry page を維持
-            logger.info(f"[{experiment.experiment_id}] emergency: holding scale=0 for 30s")
-            time.sleep(30)
-
-            # 正常な Pod で回復
-            self.apps_v1.patch_namespaced_deployment_scale(
-                name=service, namespace=namespace,
-                body={"spec": {"replicas": original_replicas}},
-            )
-            logger.info(f"[{experiment.experiment_id}] emergency: {service} scaled back to {original_replicas} — recovering")
-
-        except Exception as e:
-            logger.error(f"[{experiment.experiment_id}] emergency_recover failed: {e}")
-            # フェイルセーフ: scale=0 のまま放置しない
-            try:
-                self.apps_v1.patch_namespaced_deployment_scale(
-                    name=service, namespace=namespace,
-                    body={"spec": {"replicas": original_replicas}},
-                )
-            except Exception:
-                pass
-
     def run(self, experiment: Experiment):
         if not experiment.started_at:
             experiment.started_at = datetime.now(timezone.utc).isoformat()
         self._record_experiment(experiment, "running")
 
         try:
-            if experiment.fault_type == "pod_kill":
-                self.pod_kill(experiment)
-                logger.info(f"[{experiment.experiment_id}] waiting {experiment.duration_seconds}s for recovery observation")
-                self._interruptible_sleep(experiment, experiment.duration_seconds)
-
-            elif experiment.fault_type == "cpu_stress":
-                self.cpu_stress_inject(experiment)
-                completed = self._interruptible_sleep(experiment, experiment.duration_seconds)
-                if not completed:
-                    return
-                self.cpu_stress_remove(experiment)
-
-            elif experiment.fault_type == "memory_stress":
-                self.memory_stress_inject(experiment)
-                completed = self._interruptible_sleep(experiment, experiment.duration_seconds)
-                if not completed:
-                    return
-                self.memory_stress_remove(experiment)
-
-            elif experiment.fault_type == "http_error_inject":
+            if experiment.fault_type == "http_error_inject":
                 self.http_error_inject(experiment)
                 completed = self._interruptible_sleep(experiment, experiment.duration_seconds)
-                if not completed:
-                    return
                 self.http_error_remove(experiment)
-
-            elif experiment.fault_type == "network_latency":
-                self.network_latency_inject(experiment)
-                completed = self._interruptible_sleep(experiment, experiment.duration_seconds)
                 if not completed:
                     return
-                self.network_latency_remove(experiment)
+
+            elif experiment.fault_type in ("pod_kill", "cpu_stress", "memory_stress", "network_latency"):
+                template_id = self._get_fis_template_id(experiment)
+                fis_exp_id = self._fis_start_experiment(template_id, experiment.experiment_id)
+                self._active_fis[experiment.experiment_id] = fis_exp_id
+                logger.info(f"[{experiment.experiment_id}] FIS experiment started: {fis_exp_id}")
+
+                result = self._fis_wait_and_monitor(fis_exp_id, experiment)
+                self._active_fis.pop(experiment.experiment_id, None)
+
+                if result == "failed":
+                    raise RuntimeError(f"FIS experiment {fis_exp_id} failed")
+                if result == "stopped":
+                    return
 
             else:
                 raise ValueError(f"Unknown fault_type: {experiment.fault_type}")
@@ -374,18 +338,19 @@ class ChaosAgent:
         self._record_experiment(experiment, "completed")
         logger.info(f"[{experiment.experiment_id}] experiment completed")
 
-    def stop(self, experiment: Experiment, reason: str = "manual"):  # noqa: D401
-        cleanup = {
-            "cpu_stress": self.cpu_stress_remove,
-            "memory_stress": self.memory_stress_remove,
-            "http_error_inject": self.http_error_remove,
-            "network_latency": self.network_latency_remove,
-        }
-        if experiment.fault_type in cleanup:
+    def stop(self, experiment: Experiment, reason: str = "manual"):
+        if experiment.fault_type == "http_error_inject":
             try:
-                cleanup[experiment.fault_type](experiment)
+                self.http_error_remove(experiment)
             except Exception as e:
-                logger.warning(f"[{experiment.experiment_id}] cleanup failed: {e}")
+                logger.warning(f"[{experiment.experiment_id}] http_error cleanup failed: {e}")
+        else:
+            fis_exp_id = self._active_fis.get(experiment.experiment_id)
+            if fis_exp_id:
+                try:
+                    self.fis.stop_experiment(id=fis_exp_id)
+                except Exception as e:
+                    logger.warning(f"[{experiment.experiment_id}] FIS stop failed: {e}")
 
         self._record_experiment(experiment, "stopped", stop_reason=reason)
         logger.info(f"[{experiment.experiment_id}] experiment stopped: {reason}")
@@ -453,7 +418,6 @@ class ChaosAgentPoller:
             self._running.pop(experiment.experiment_id, None)
 
     def _poll(self):
-        # 完了スレッドを整理
         done = [eid for eid, t in self._running.items() if not t.is_alive()]
         for eid in done:
             self._running.pop(eid, None)
@@ -537,7 +501,6 @@ if __name__ == "__main__":
 
     chaos_agent = ChaosAgent()
 
-    # Ingress を常に優先参照。ALB 再作成で env var が古くなるため env var は最終フォールバックのみ。
     service_b_url = _discover_service_b_url(chaos_agent.networking_v1)
     if service_b_url:
         logger.info(f"service-b URL from Ingress: {service_b_url}")
@@ -556,7 +519,6 @@ if __name__ == "__main__":
     else:
         logger.info("SERVICE_B_URL not set, service-b traffic generator disabled")
 
-    # service-a /aggregate — network_latency 実験で Envoy + stale cache の効果を観測するためのトラフィック
     service_a_aggregate_url = os.environ.get("SERVICE_A_AGGREGATE_URL")
     if service_a_aggregate_url:
         gen_a = TrafficGenerator(service_a_aggregate_url, interval=traffic_interval)

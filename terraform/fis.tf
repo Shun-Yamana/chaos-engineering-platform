@@ -133,3 +133,259 @@ output "fis_template_service_b_id" {
   description = "FIS experiment template ID for service-b network_latency"
   value       = aws_fis_experiment_template.network_latency["service-b"].id
 }
+
+# ---------------------------------------------------------------------------
+# FIS 実験テンプレート — pod_kill (ADR 054)
+# ---------------------------------------------------------------------------
+
+resource "aws_fis_experiment_template" "pod_kill" {
+  description = "Pod kill injection for service-b (aws:eks:pod-delete)"
+  role_arn    = aws_iam_role.fis_execution.arn
+
+  stop_condition {
+    source = "aws:cloudwatch:alarm"
+    value  = aws_cloudwatch_metric_alarm.service_b_5xx_rate[0].arn
+  }
+
+  target {
+    name           = "pods"
+    resource_type  = "aws:eks:pod"
+    selection_mode = "COUNT(1)"
+
+    parameters = {
+      clusterIdentifier = module.eks.cluster_name
+      namespace         = "default"
+      selectorType      = "labelSelector"
+      selectorValue     = "app=service-b"
+    }
+  }
+
+  action {
+    name      = "kill-pod"
+    action_id = "aws:eks:pod-delete"
+
+    target {
+      key   = "Pods"
+      value = "pods"
+    }
+  }
+
+  experiment_options {
+    empty_target_resolution_mode = "fail"
+  }
+
+  log_configuration {
+    log_schema_version = 2
+    cloudwatch_logs_configuration {
+      log_group_arn = "${aws_cloudwatch_log_group.fis.arn}:*"
+    }
+  }
+
+  experiment_report_configuration {
+    data_sources {
+      cloudwatch_dashboard {
+        dashboard_arn = aws_cloudwatch_dashboard.chaos_experiment.dashboard_arn
+      }
+    }
+
+    outputs {
+      s3_configuration {
+        bucket_name = aws_s3_bucket.fis_reports.bucket
+        prefix      = "pod_kill"
+      }
+    }
+
+    pre_experiment_duration  = "PT5M"
+    post_experiment_duration = "PT5M"
+  }
+
+  tags = merge(local.common_tags, {
+    Project = "chaos-platform"
+  })
+}
+
+# ---------------------------------------------------------------------------
+# FIS 実験テンプレート — cpu_stress (ADR 054)
+# ---------------------------------------------------------------------------
+
+resource "aws_fis_experiment_template" "cpu_stress" {
+  description = "CPU stress injection for service-b (aws:eks:pod-cpu-stress)"
+  role_arn    = aws_iam_role.fis_execution.arn
+
+  stop_condition {
+    source = "aws:cloudwatch:alarm"
+    value  = aws_cloudwatch_metric_alarm.service_b_5xx_rate[0].arn
+  }
+
+  target {
+    name           = "pods"
+    resource_type  = "aws:eks:pod"
+    selection_mode = "ALL"
+
+    parameters = {
+      clusterIdentifier = module.eks.cluster_name
+      namespace         = "default"
+      selectorType      = "labelSelector"
+      selectorValue     = "app=service-b"
+    }
+  }
+
+  action {
+    name      = "inject-cpu-stress"
+    action_id = "aws:eks:pod-cpu-stress"
+
+    parameter {
+      key   = "cpuPercentage"
+      value = "80"
+    }
+
+    parameter {
+      key   = "duration"
+      value = "PT300S"
+    }
+
+    parameter {
+      key   = "kubernetesServiceAccount"
+      value = "default"
+    }
+
+    target {
+      key   = "Pods"
+      value = "pods"
+    }
+  }
+
+  experiment_options {
+    empty_target_resolution_mode = "fail"
+  }
+
+  log_configuration {
+    log_schema_version = 2
+    cloudwatch_logs_configuration {
+      log_group_arn = "${aws_cloudwatch_log_group.fis.arn}:*"
+    }
+  }
+
+  experiment_report_configuration {
+    data_sources {
+      cloudwatch_dashboard {
+        dashboard_arn = aws_cloudwatch_dashboard.chaos_experiment.dashboard_arn
+      }
+    }
+
+    outputs {
+      s3_configuration {
+        bucket_name = aws_s3_bucket.fis_reports.bucket
+        prefix      = "cpu_stress"
+      }
+    }
+
+    pre_experiment_duration  = "PT5M"
+    post_experiment_duration = "PT5M"
+  }
+
+  tags = merge(local.common_tags, {
+    Project = "chaos-platform"
+  })
+}
+
+# ---------------------------------------------------------------------------
+# FIS 実験テンプレート — memory_stress (ADR 054)
+# memoryPercentage=58 は ADR 047 の設計値 (150MB/256MB) を踏襲
+# ---------------------------------------------------------------------------
+
+resource "aws_fis_experiment_template" "memory_stress" {
+  description = "Memory stress injection for service-b (aws:eks:pod-memory-stress)"
+  role_arn    = aws_iam_role.fis_execution.arn
+
+  stop_condition {
+    source = "aws:cloudwatch:alarm"
+    value  = aws_cloudwatch_metric_alarm.service_b_5xx_rate[0].arn
+  }
+
+  target {
+    name           = "pods"
+    resource_type  = "aws:eks:pod"
+    selection_mode = "ALL"
+
+    parameters = {
+      clusterIdentifier = module.eks.cluster_name
+      namespace         = "default"
+      selectorType      = "labelSelector"
+      selectorValue     = "app=service-b"
+    }
+  }
+
+  action {
+    name      = "inject-memory-stress"
+    action_id = "aws:eks:pod-memory-stress"
+
+    parameter {
+      key   = "memoryPercentage"
+      value = "58"
+    }
+
+    parameter {
+      key   = "duration"
+      value = "PT300S"
+    }
+
+    parameter {
+      key   = "kubernetesServiceAccount"
+      value = "default"
+    }
+
+    target {
+      key   = "Pods"
+      value = "pods"
+    }
+  }
+
+  experiment_options {
+    empty_target_resolution_mode = "fail"
+  }
+
+  log_configuration {
+    log_schema_version = 2
+    cloudwatch_logs_configuration {
+      log_group_arn = "${aws_cloudwatch_log_group.fis.arn}:*"
+    }
+  }
+
+  experiment_report_configuration {
+    data_sources {
+      cloudwatch_dashboard {
+        dashboard_arn = aws_cloudwatch_dashboard.chaos_experiment.dashboard_arn
+      }
+    }
+
+    outputs {
+      s3_configuration {
+        bucket_name = aws_s3_bucket.fis_reports.bucket
+        prefix      = "memory_stress"
+      }
+    }
+
+    pre_experiment_duration  = "PT5M"
+    post_experiment_duration = "PT5M"
+  }
+
+  tags = merge(local.common_tags, {
+    Project = "chaos-platform"
+  })
+}
+
+output "fis_template_pod_kill_id" {
+  description = "FIS experiment template ID for pod_kill"
+  value       = aws_fis_experiment_template.pod_kill.id
+}
+
+output "fis_template_cpu_stress_id" {
+  description = "FIS experiment template ID for cpu_stress"
+  value       = aws_fis_experiment_template.cpu_stress.id
+}
+
+output "fis_template_memory_stress_id" {
+  description = "FIS experiment template ID for memory_stress"
+  value       = aws_fis_experiment_template.memory_stress.id
+}
