@@ -12,8 +12,10 @@ from fastapi import FastAPI, HTTPException, Request
 
 from fastapi.middleware.cors import CORSMiddleware
 from aws_xray_sdk.core import xray_recorder, patch_all
+from aws_xray_sdk.core.async_context import AsyncContext
 from aws_xray_sdk.ext.fastapi import XRayMiddleware
 
+xray_recorder.configure(context_missing="LOG_ERROR", context=AsyncContext())
 patch_all()
 
 logging.basicConfig(level=logging.INFO)
@@ -45,6 +47,12 @@ SERVICE_B_INTERNAL_URL = os.getenv("SERVICE_B_INTERNAL_URL", "http://service-b:8
 SERVICE_D_INTERNAL_URL = os.getenv("SERVICE_D_INTERNAL_URL", "http://service-d:8000")
 _AGGREGATE_TIMEOUT_S = 0.3   # 300ms: slightly above Envoy's 200ms timeout
 _STALE_CACHE_TTL_S = 60.0   # 60s: covers 30s traffic interval with margin
+
+# 共有 HTTP クライアント — コネクションプールで再利用し接続レイテンシを排除する
+# connect timeout を read timeout より長く設定して初回接続遅延に対応
+_http_b: httpx.AsyncClient | None = None
+_http_d: httpx.AsyncClient | None = None
+_http_aggregate: httpx.AsyncClient | None = None
 
 # {item_id: (response_dict, timestamp)}
 _stale_cache: dict[int, tuple[dict, float]] = {}
@@ -248,6 +256,27 @@ def _emit_aggregate_emf(duration_ms: float, fallback: bool, circuit_open: bool):
     print(json.dumps(emf), flush=True)
 
 
+@app.on_event("startup")
+async def _startup():
+    global _http_b, _http_d, _http_aggregate
+    _http_b = httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=2.0, read=_PRODUCT_TIMEOUT_S, write=2.0, pool=5.0)
+    )
+    _http_d = httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=2.0, read=_INVENTORY_TIMEOUT_S, write=2.0, pool=5.0)
+    )
+    _http_aggregate = httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=2.0, read=_AGGREGATE_TIMEOUT_S, write=2.0, pool=5.0)
+    )
+
+
+@app.on_event("shutdown")
+async def _shutdown():
+    for c in (_http_b, _http_d, _http_aggregate):
+        if c:
+            await c.aclose()
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "service-a"}
@@ -280,10 +309,9 @@ async def aggregate(item_id: int):
     # 成功: キャッシュ更新して返す
     # 失敗: stale cache にフォールバック（TTL なし — fault 中は何分経っても stale を返す）
     try:
-        async with httpx.AsyncClient(timeout=_AGGREGATE_TIMEOUT_S) as client:
-            resp = await client.get(f"{SERVICE_B_INTERNAL_URL}/data/{item_id}")
-            resp.raise_for_status()
-            data = resp.json()
+        resp = await _http_aggregate.get(f"{SERVICE_B_INTERNAL_URL}/data/{item_id}")
+        resp.raise_for_status()
+        data = resp.json()
         _stale_cache[item_id] = (data, monotonic())
         duration_ms = (monotonic() - start) * 1000
         _emit_aggregate_emf(duration_ms, fallback=False, circuit_open=False)
@@ -315,10 +343,9 @@ async def _fetch_product_resilient(
     if _product_cb.allow_request():
         b_t0 = monotonic()
         try:
-            async with httpx.AsyncClient(timeout=_PRODUCT_TIMEOUT_S) as client:
-                resp = await client.get(f"{SERVICE_B_INTERNAL_URL}/products/{product_id}")
-                resp.raise_for_status()
-                product = resp.json()
+            resp = await _http_b.get(f"{SERVICE_B_INTERNAL_URL}/products/{product_id}")
+            resp.raise_for_status()
+            product = resp.json()
             b_latency_ms = (monotonic() - b_t0) * 1000
             _product_cb.record_success()
             circuit_state = _product_cb.state
@@ -349,10 +376,9 @@ async def _fetch_inventory(
 
     d_t0 = monotonic()
     try:
-        async with httpx.AsyncClient(timeout=_INVENTORY_TIMEOUT_S) as client:
-            resp = await client.get(f"{SERVICE_D_INTERNAL_URL}/inventory/{product_id}")
-            resp.raise_for_status()
-            data = resp.json()
+        resp = await _http_d.get(f"{SERVICE_D_INTERNAL_URL}/inventory/{product_id}")
+        resp.raise_for_status()
+        data = resp.json()
         d_latency_ms = (monotonic() - d_t0) * 1000
         _inventory_cb.record_success()
         return data, "fresh", d_latency_ms

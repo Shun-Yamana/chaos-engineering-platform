@@ -7,7 +7,7 @@
 
 EC2 Managed Node Group への移行（ADR 051）により DaemonSet が全ノードに配置可能になり、Node Exporter や kube-state-metrics など Kubernetes ネイティブなメトリクス収集が可能になった。
 
-Day 3 では以下の可観測性レイヤーを完成させたい:
+
 1. Prometheus による Pod/Node メトリクス収集
 2. Grafana による統合ダッシュボード（CloudWatch + X-Ray + Prometheus を一画面に集約）
 3. DynamoDB Streams → Grafana Annotation API により実験タイムラインをダッシュボードに自動反映

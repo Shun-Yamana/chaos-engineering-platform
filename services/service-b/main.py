@@ -10,8 +10,10 @@ import psutil
 from fastapi import FastAPI, HTTPException, Request
 
 from aws_xray_sdk.core import xray_recorder, patch_all
+from aws_xray_sdk.core.async_context import AsyncContext
 from aws_xray_sdk.ext.fastapi import XRayMiddleware
 
+xray_recorder.configure(context_missing="LOG_ERROR", context=AsyncContext())
 patch_all()
 
 logging.basicConfig(level=logging.INFO)
@@ -36,6 +38,10 @@ SERVICE_C_INTERNAL_URL = os.getenv("SERVICE_C_INTERNAL_URL", "http://service-c:8
 
 # service-c (レビュー要約) のタイムアウト: 非クリティカルなため短めに設定
 _REVIEW_TIMEOUT_S = 0.1  # 100ms: 超過時は reviews=null でレスポンスを返す
+
+# 共有 HTTP クライアント
+_http_c: httpx.AsyncClient | None = None
+_http_a: httpx.AsyncClient | None = None
 
 PRODUCTS = {
     "p-001": {
@@ -161,6 +167,22 @@ def _emf_metrics_emitter():
 threading.Thread(target=_emf_metrics_emitter, daemon=True, name="emf-metrics").start()
 
 
+@app.on_event("startup")
+async def _startup():
+    global _http_c, _http_a
+    _http_c = httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=2.0, read=_REVIEW_TIMEOUT_S, write=2.0, pool=5.0)
+    )
+    _http_a = httpx.AsyncClient(timeout=3.0)
+
+
+@app.on_event("shutdown")
+async def _shutdown():
+    for c in (_http_c, _http_a):
+        if c:
+            await c.aclose()
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "service-b"}
@@ -176,10 +198,9 @@ async def get_item(item_id: int):
         await asyncio.sleep(ms / 1000)
 
     try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            response = await client.get(f"{SERVICE_A_URL}items/{item_id}")
-            response.raise_for_status()
-            data = response.json()
+        response = await _http_a.get(f"{SERVICE_A_URL}items/{item_id}")
+        response.raise_for_status()
+        data = response.json()
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="service-a timeout")
     except httpx.HTTPStatusError as e:
@@ -222,10 +243,9 @@ async def get_data(item_id: int):
 async def _fetch_reviews(product_id: str) -> dict | None:
     """service-c からレビュー要約・レコメンドを取得する。失敗時は None を返す（非クリティカル）。"""
     try:
-        async with httpx.AsyncClient(timeout=_REVIEW_TIMEOUT_S) as client:
-            resp = await client.get(f"{SERVICE_C_INTERNAL_URL}/reviews/{product_id}")
-            resp.raise_for_status()
-            return {**resp.json(), "_source": "fresh"}
+        resp = await _http_c.get(f"{SERVICE_C_INTERNAL_URL}/reviews/{product_id}")
+        resp.raise_for_status()
+        return {**resp.json(), "_source": "fresh"}
     except Exception:
         return None
 
