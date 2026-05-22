@@ -15,48 +15,7 @@ module "eks" {
 # EKS アドオン (ADR 011 item 7)
 # ---------------------------------------------------------------------------
 
-# Fargate 上の coredns は eks.amazonaws.com/compute-type: ec2 アノテーションを
-# 削除しないと Pending のまま DEGRADED になる（EKS Fargate の既知制約）
-# addon 作成より先に patch することで ACTIVE になる
-resource "null_resource" "patch_coredns_fargate" {
-  # cluster_endpoint にはクラスター固有ハッシュが含まれるため、
-  # destroy+apply でクラスターが再作成されると必ずトリガーされる
-  triggers = {
-    cluster_endpoint = module.eks.cluster_endpoint
-  }
-
-  # Windows cmd では bash の until/sleep が使えないため PowerShell で記述。
-  # Fargate scheduler は EKS cluster 作成直後に起動完了しておらず、
-  # 最初の rollout restart で pod に toleration が注入されないことがある。
-  # Running になるまで 30 秒ごとに rollout restart を繰り返すことで確実にスケジューリングする。
-  provisioner "local-exec" {
-    interpreter = ["PowerShell", "-Command"]
-    command     = <<-EOT
-      aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.aws_region}
-      Write-Host "Waiting for coredns deployment to appear..."
-      $deadline = (Get-Date).AddMinutes(5)
-      while (-not (kubectl get deployment coredns -n kube-system 2>$null) -and (Get-Date) -lt $deadline) {
-        Write-Host "coredns deployment not yet available, retrying in 15s..."
-        Start-Sleep -Seconds 15
-      }
-      kubectl patch deployment coredns -n kube-system --type json `
-        -p '[{"op":"remove","path":"/spec/template/metadata/annotations/eks.amazonaws.com~1compute-type"}]'
-      kubectl rollout restart deployment/coredns -n kube-system
-      Write-Host "Waiting for coredns pods to become Running (Fargate scheduler startup)..."
-      $deadline = (Get-Date).AddMinutes(15)
-      while ((Get-Date) -lt $deadline) {
-        $phase = kubectl get pods -n kube-system -l k8s-app=kube-dns -o jsonpath='{.items[0].status.phase}' 2>$null
-        if ($phase -eq 'Running') { Write-Host "coredns Running."; break }
-        Write-Host "coredns still Pending, restarting to re-trigger Fargate scheduler..."
-        kubectl rollout restart deployment/coredns -n kube-system
-        Start-Sleep -Seconds 30
-      }
-    EOT
-  }
-
-  depends_on = [module.eks]
-}
-
+# EC2ノード上では CoreDNS は自動的に Running になるため Fargate patch は不要 (ADR 051)
 resource "aws_eks_addon" "coredns" {
   cluster_name                = module.eks.cluster_name
   addon_name                  = "coredns"
@@ -64,11 +23,7 @@ resource "aws_eks_addon" "coredns" {
   resolve_conflicts_on_update = "OVERWRITE"
   tags                        = local.common_tags
 
-  depends_on = [null_resource.patch_coredns_fargate]
-
-  timeouts {
-    create = "30m"
-  }
+  depends_on = [module.eks]
 }
 
 resource "aws_eks_addon" "vpc_cni" {
@@ -81,29 +36,6 @@ resource "aws_eks_addon" "vpc_cni" {
   tags = local.common_tags
 
   depends_on = [module.eks]
-}
-
-# addon 作成後に CoreDNS を再起動して Fargate ノードへのスケジューリングを確定させる
-# patch_coredns_fargate は addon より先に実行されるが、addon が Deployment を上書きするため
-# addon 作成後にも patch + rollout restart が必要
-resource "null_resource" "restart_coredns_after_addon" {
-  triggers = {
-    addon_arn        = aws_eks_addon.coredns.arn
-    cluster_endpoint = module.eks.cluster_endpoint
-  }
-
-  provisioner "local-exec" {
-    interpreter = ["PowerShell", "-Command"]
-    command     = <<-EOT
-      aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.aws_region}
-      kubectl patch deployment coredns -n kube-system --type json `
-        -p '[{"op":"remove","path":"/spec/template/metadata/annotations/eks.amazonaws.com~1compute-type"}]'
-      kubectl rollout restart deployment/coredns -n kube-system
-      kubectl rollout status deployment/coredns -n kube-system --timeout=300s
-    EOT
-  }
-
-  depends_on = [aws_eks_addon.coredns]
 }
 
 resource "aws_eks_addon" "cloudwatch_observability" {
@@ -187,7 +119,7 @@ resource "null_resource" "apply_ingress" {
     EOT
   }
 
-  depends_on = [null_resource.restart_coredns_after_addon, local_file.ingress_yaml]
+  depends_on = [aws_eks_addon.coredns, local_file.ingress_yaml]
 }
 
 # ---------------------------------------------------------------------------
