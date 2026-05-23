@@ -326,7 +326,7 @@ resource "aws_fis_experiment_template" "memory_stress" {
 
     parameter {
       key   = "memoryPercentage"
-      value = "58"
+      value = "95"
     }
 
     parameter {
