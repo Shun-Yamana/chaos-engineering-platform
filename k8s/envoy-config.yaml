@@ -47,6 +47,11 @@ data:
                     percentage:
                       numerator: 0
                       denominator: HUNDRED
+                  delay:
+                    fixed_delay: 0s
+                    percentage:
+                      numerator: 0
+                      denominator: HUNDRED
               - name: envoy.filters.http.router
                 typed_config:
                   "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router

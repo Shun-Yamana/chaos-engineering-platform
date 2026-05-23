@@ -217,7 +217,7 @@ class ChaosAgent:
     # ---------------------------------------------------------------------------
 
     def _patch_envoy_fault(self, namespace: str, numerator: int):
-        """envoy-service-b-egress ConfigMap の fault filter percentage を更新する"""
+        """envoy-service-b-egress ConfigMap の abort filter percentage を更新する"""
         cm = self.core_v1.read_namespaced_config_map(
             name="envoy-service-b-egress", namespace=namespace
         )
@@ -231,7 +231,48 @@ class ChaosAgent:
         self.core_v1.patch_namespaced_config_map(
             name="envoy-service-b-egress", namespace=namespace, body=cm
         )
-        logger.info(f"envoy fault filter patched: numerator={numerator}")
+        logger.info(f"envoy abort filter patched: numerator={numerator}")
+
+    def _patch_envoy_delay(self, namespace: str, latency_ms: int):
+        """envoy-service-b-egress ConfigMap の delay filter を更新する"""
+        cm = self.core_v1.read_namespaced_config_map(
+            name="envoy-service-b-egress", namespace=namespace
+        )
+        yaml_str = cm.data["envoy.yaml"]
+        delay_s = f"{latency_ms / 1000:.3f}s"
+        yaml_str = re.sub(r"(fixed_delay:\s*)[\d.]+s", rf"\g<1>{delay_s}", yaml_str, count=1)
+        yaml_str = re.sub(
+            r"(fixed_delay:.*?numerator:\s*)\d+",
+            r"\g<1>100",
+            yaml_str,
+            count=1,
+            flags=re.DOTALL,
+        )
+        cm.data["envoy.yaml"] = yaml_str
+        self.core_v1.patch_namespaced_config_map(
+            name="envoy-service-b-egress", namespace=namespace, body=cm
+        )
+        logger.info(f"envoy delay filter patched: {latency_ms}ms")
+
+    def _remove_envoy_delay(self, namespace: str):
+        """envoy-service-b-egress ConfigMap の delay filter を無効化する"""
+        cm = self.core_v1.read_namespaced_config_map(
+            name="envoy-service-b-egress", namespace=namespace
+        )
+        yaml_str = cm.data["envoy.yaml"]
+        yaml_str = re.sub(r"(fixed_delay:\s*)[\d.]+s", r"\g<1>0s", yaml_str, count=1)
+        yaml_str = re.sub(
+            r"(fixed_delay:.*?numerator:\s*)\d+",
+            r"\g<1>0",
+            yaml_str,
+            count=1,
+            flags=re.DOTALL,
+        )
+        cm.data["envoy.yaml"] = yaml_str
+        self.core_v1.patch_namespaced_config_map(
+            name="envoy-service-b-egress", namespace=namespace, body=cm
+        )
+        logger.info("envoy delay filter disabled")
 
     def _rollout_restart(self, namespace: str, service: str):
         """Deployment を rolling restart して新 ConfigMap を反映する"""
@@ -248,15 +289,34 @@ class ChaosAgent:
         self._rollout_restart(experiment.namespace, "service-a")
         # Envoy ローリング再起動が完了するまで待機 (~30s, ADR 055)
         time.sleep(35)
-        logger.info(f"[{experiment.experiment_id}] Envoy fault filter active: {numerator}% errors")
+        logger.info(f"[{experiment.experiment_id}] Envoy abort filter active: {numerator}% errors")
 
     def http_error_remove(self, experiment: Experiment):
         self._patch_envoy_fault(experiment.namespace, 0)
         self._rollout_restart(experiment.namespace, "service-a")
-        logger.info(f"[{experiment.experiment_id}] Envoy fault filter disabled")
+        logger.info(f"[{experiment.experiment_id}] Envoy abort filter disabled")
+
+    def network_latency_inject(self, experiment: Experiment):
+        self._patch_envoy_delay(experiment.namespace, experiment.latency_ms)
+        self._rollout_restart(experiment.namespace, "service-a")
+        time.sleep(35)
+        logger.info(f"[{experiment.experiment_id}] Envoy delay filter active: {experiment.latency_ms}ms")
+
+    def network_latency_remove(self, experiment: Experiment):
+        self._remove_envoy_delay(experiment.namespace)
+        self._rollout_restart(experiment.namespace, "service-a")
+        logger.info(f"[{experiment.experiment_id}] Envoy delay filter disabled")
 
     def _emergency_recover(self, experiment: Experiment):
-        """http_error_inject の自己防衛: scale-to-0 で即断ち切り → fault 除去 → 自動回復"""
+        """Envoy 系実験の緊急回復。network_latency は delay 除去のみ、http_error_inject は scale-to-0 後に fault 除去。"""
+        if experiment.fault_type == "network_latency":
+            try:
+                self.network_latency_remove(experiment)
+                logger.info(f"[{experiment.experiment_id}] emergency: delay filter disabled")
+            except Exception as e:
+                logger.error(f"[{experiment.experiment_id}] emergency_recover_latency failed: {e}")
+            return
+
         namespace = experiment.namespace
         service = experiment.service
         original_replicas = 2
@@ -332,16 +392,24 @@ class ChaosAgent:
         self._record_experiment(experiment, "running")
 
         try:
-            if experiment.fault_type == "http_error_inject":
+            if experiment.fault_type in ("http_error_inject", "network_latency"):
                 for svc in ("service-a", "service-b", "service-c", "service-d"):
                     try:
                         self._set_experiment_id(experiment.namespace, svc, experiment.experiment_id)
                     except Exception as e:
                         logger.warning(f"[{experiment.experiment_id}] EXPERIMENT_ID patch failed on {svc}: {e}")
 
-                self.http_error_inject(experiment)
+                if experiment.fault_type == "http_error_inject":
+                    self.http_error_inject(experiment)
+                else:
+                    self.network_latency_inject(experiment)
+
                 completed = self._interruptible_sleep(experiment, experiment.duration_seconds)
-                self.http_error_remove(experiment)
+
+                if experiment.fault_type == "http_error_inject":
+                    self.http_error_remove(experiment)
+                else:
+                    self.network_latency_remove(experiment)
 
                 for svc in ("service-a", "service-b", "service-c", "service-d"):
                     try:
@@ -352,7 +420,7 @@ class ChaosAgent:
                 if not completed:
                     return
 
-            elif experiment.fault_type in ("pod_kill", "cpu_stress", "memory_stress", "network_latency"):
+            elif experiment.fault_type in ("pod_kill", "cpu_stress", "memory_stress"):
                 # X-Ray アノテーション用に EXPERIMENT_ID を全サービスにセット
                 for svc in ("service-a", "service-b", "service-c", "service-d"):
                     try:
@@ -396,6 +464,11 @@ class ChaosAgent:
                 self.http_error_remove(experiment)
             except Exception as e:
                 logger.warning(f"[{experiment.experiment_id}] http_error cleanup failed: {e}")
+        elif experiment.fault_type == "network_latency":
+            try:
+                self.network_latency_remove(experiment)
+            except Exception as e:
+                logger.warning(f"[{experiment.experiment_id}] network_latency cleanup failed: {e}")
         else:
             fis_exp_id = self._active_fis.get(experiment.experiment_id)
             if fis_exp_id:
