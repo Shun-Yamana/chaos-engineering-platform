@@ -3,8 +3,6 @@ import re
 import time
 import logging
 import threading
-import urllib.request
-import urllib.error
 import boto3
 from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass
@@ -504,82 +502,10 @@ class ChaosAgentPoller:
             time.sleep(self._poll_interval)
 
 
-# ---------------------------------------------------------------------------
-# バックグラウンド定期トラフィック生成（CloudWatch アラームをデータ不足にさせない）
-# ---------------------------------------------------------------------------
-
-class TrafficGenerator:
-    """SERVICE_B_URL に定期的に GET リクエストを送り ALB メトリクスを維持する。"""
-
-    def __init__(self, url: str, interval: int = 30, origin_secret: str = ""):
-        self._url = url
-        self._interval = interval
-        self._origin_secret = origin_secret
-
-    def _send(self):
-        try:
-            req = urllib.request.Request(self._url)
-            if self._origin_secret:
-                req.add_header("X-Origin-Verify", self._origin_secret)
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                logger.debug(f"[traffic-gen] {self._url} -> {resp.status}")
-        except urllib.error.HTTPError as e:
-            logger.debug(f"[traffic-gen] {self._url} -> {e.code}")
-        except Exception as e:
-            logger.warning(f"[traffic-gen] request failed: {e}")
-
-    def run_forever(self):
-        logger.info(f"traffic-gen started (url={self._url} interval={self._interval}s)")
-        while True:
-            self._send()
-            time.sleep(self._interval)
-
-
-def _discover_service_b_url(networking_v1) -> str | None:
-    """Ingress の ALB ホスト名から service-b URL を自動検出する。SERVICE_B_URL 未設定時のフォールバック。"""
-    try:
-        ingress = networking_v1.read_namespaced_ingress(name="service-b", namespace="default")
-        lb = ingress.status.load_balancer
-        if lb and lb.ingress:
-            hostname = lb.ingress[0].hostname
-            if hostname:
-                return f"http://{hostname}/items/1"
-    except Exception as e:
-        logger.warning(f"Ingress-based service-b discovery failed: {e}")
-    return None
-
-
 if __name__ == "__main__":
     if not TABLE_NAME:
         raise RuntimeError("TABLE_NAME environment variable is required")
 
     chaos_agent = ChaosAgent()
-
-    service_b_url = _discover_service_b_url(chaos_agent.networking_v1)
-    if service_b_url:
-        logger.info(f"service-b URL from Ingress: {service_b_url}")
-    else:
-        service_b_url = os.environ.get("SERVICE_B_URL")
-        if service_b_url:
-            logger.info(f"service-b URL from env (fallback): {service_b_url}")
-
-    traffic_interval = int(os.environ.get("TRAFFIC_GEN_INTERVAL", "30"))
-    origin_secret = os.environ.get("ALB_ORIGIN_SECRET", "")
-
-    if service_b_url:
-        gen = TrafficGenerator(service_b_url, interval=traffic_interval, origin_secret=origin_secret)
-        t = threading.Thread(target=gen.run_forever, daemon=True, name="traffic-gen-service-b")
-        t.start()
-    else:
-        logger.info("SERVICE_B_URL not set, service-b traffic generator disabled")
-
-    service_a_aggregate_url = os.environ.get("SERVICE_A_AGGREGATE_URL")
-    if service_a_aggregate_url:
-        gen_a = TrafficGenerator(service_a_aggregate_url, interval=traffic_interval)
-        t_a = threading.Thread(target=gen_a.run_forever, daemon=True, name="traffic-gen-service-a")
-        t_a.start()
-    else:
-        logger.info("SERVICE_A_AGGREGATE_URL not set, service-a traffic generator disabled")
-
     poller = ChaosAgentPoller(chaos_agent, TABLE_NAME, poll_interval=10)
     poller.run_forever()
