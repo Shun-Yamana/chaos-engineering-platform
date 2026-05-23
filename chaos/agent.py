@@ -43,15 +43,31 @@ class Experiment:
     memory_stress_mb: int = 150
 
 
-# fault_type → FIS テンプレート ID の環境変数名マッピング
-_FIS_TEMPLATE_ENV = {
-    "pod_kill":       "FIS_TEMPLATE_POD_KILL",
-    "cpu_stress":     "FIS_TEMPLATE_CPU_STRESS",
-    "memory_stress":  "FIS_TEMPLATE_MEMORY_STRESS",
+# fault_type × service → FIS テンプレート ID の環境変数名マッピング
+_FIS_FAULT_TEMPLATE_ENV = {
+    "pod_kill": {
+        "service-b": "FIS_TEMPLATE_POD_KILL_SERVICE_B",
+        "service-c": "FIS_TEMPLATE_POD_KILL_SERVICE_C",
+    },
+    "cpu_stress": {
+        "service-b": "FIS_TEMPLATE_CPU_STRESS_SERVICE_B",
+        "service-c": "FIS_TEMPLATE_CPU_STRESS_SERVICE_C",
+    },
+    "memory_stress": {
+        "service-b": "FIS_TEMPLATE_MEMORY_STRESS_SERVICE_B",
+        "service-c": "FIS_TEMPLATE_MEMORY_STRESS_SERVICE_C",
+    },
 }
+# ADR 057: network_latency は Envoy ベースに移行。将来の全通信遅延テスト用に残置。
 _NETWORK_LATENCY_TEMPLATE_ENV = {
     "service-a": "FIS_TEMPLATE_SERVICE_A",
     "service-b": "FIS_TEMPLATE_SERVICE_B",
+}
+# experiment.service → (Envoy ConfigMap 名) のマッピング
+# service-a Envoy = a→b 障害注入, service-b Envoy = b→c 障害注入
+_ENVOY_EGRESS_MAP = {
+    "service-a": "envoy-service-b-egress",
+    "service-b": "envoy-service-c-egress",
 }
 
 _FIS_TERMINAL_STATES = {"completed", "stopped", "failed"}
@@ -145,14 +161,10 @@ class ChaosAgent:
     # ---------------------------------------------------------------------------
 
     def _get_fis_template_id(self, experiment: Experiment) -> str:
-        if experiment.fault_type == "network_latency":
-            env_key = _NETWORK_LATENCY_TEMPLATE_ENV.get(experiment.service, "")
-        else:
-            env_key = _FIS_TEMPLATE_ENV.get(experiment.fault_type, "")
-
+        service_map = _FIS_FAULT_TEMPLATE_ENV.get(experiment.fault_type, {})
+        env_key = service_map.get(experiment.service, "")
         if not env_key:
-            raise ValueError(f"No FIS template mapping for fault_type={experiment.fault_type}")
-
+            raise ValueError(f"No FIS template mapping for fault_type={experiment.fault_type}, service={experiment.service}")
         template_id = os.environ.get(env_key, "")
         if not template_id:
             raise RuntimeError(f"Environment variable {env_key} is not set")
@@ -216,11 +228,10 @@ class ChaosAgent:
     # http_error_inject — Envoy HTTP fault filter (FIS未対応)
     # ---------------------------------------------------------------------------
 
-    def _patch_envoy_fault(self, namespace: str, numerator: int):
-        """envoy-service-b-egress ConfigMap の abort filter percentage を更新する"""
-        cm = self.core_v1.read_namespaced_config_map(
-            name="envoy-service-b-egress", namespace=namespace
-        )
+    def _patch_envoy_fault(self, namespace: str, service: str, numerator: int):
+        """対象サービスの Envoy egress ConfigMap の abort filter percentage を更新する"""
+        configmap_name = _ENVOY_EGRESS_MAP[service]
+        cm = self.core_v1.read_namespaced_config_map(name=configmap_name, namespace=namespace)
         new_yaml = re.sub(
             r"(numerator:\s*)\d+",
             rf"\g<1>{numerator}",
@@ -228,16 +239,13 @@ class ChaosAgent:
             count=1,
         )
         cm.data["envoy.yaml"] = new_yaml
-        self.core_v1.patch_namespaced_config_map(
-            name="envoy-service-b-egress", namespace=namespace, body=cm
-        )
-        logger.info(f"envoy abort filter patched: numerator={numerator}")
+        self.core_v1.patch_namespaced_config_map(name=configmap_name, namespace=namespace, body=cm)
+        logger.info(f"envoy abort filter patched on {configmap_name}: numerator={numerator}")
 
-    def _patch_envoy_delay(self, namespace: str, latency_ms: int):
-        """envoy-service-b-egress ConfigMap の delay filter を更新する"""
-        cm = self.core_v1.read_namespaced_config_map(
-            name="envoy-service-b-egress", namespace=namespace
-        )
+    def _patch_envoy_delay(self, namespace: str, service: str, latency_ms: int):
+        """対象サービスの Envoy egress ConfigMap の delay filter を更新する"""
+        configmap_name = _ENVOY_EGRESS_MAP[service]
+        cm = self.core_v1.read_namespaced_config_map(name=configmap_name, namespace=namespace)
         yaml_str = cm.data["envoy.yaml"]
         delay_s = f"{latency_ms / 1000:.3f}s"
         yaml_str = re.sub(r"(fixed_delay:\s*)[\d.]+s", rf"\g<1>{delay_s}", yaml_str, count=1)
@@ -249,16 +257,13 @@ class ChaosAgent:
             flags=re.DOTALL,
         )
         cm.data["envoy.yaml"] = yaml_str
-        self.core_v1.patch_namespaced_config_map(
-            name="envoy-service-b-egress", namespace=namespace, body=cm
-        )
-        logger.info(f"envoy delay filter patched: {latency_ms}ms")
+        self.core_v1.patch_namespaced_config_map(name=configmap_name, namespace=namespace, body=cm)
+        logger.info(f"envoy delay filter patched on {configmap_name}: {latency_ms}ms")
 
-    def _remove_envoy_delay(self, namespace: str):
-        """envoy-service-b-egress ConfigMap の delay filter を無効化する"""
-        cm = self.core_v1.read_namespaced_config_map(
-            name="envoy-service-b-egress", namespace=namespace
-        )
+    def _remove_envoy_delay(self, namespace: str, service: str):
+        """対象サービスの Envoy egress ConfigMap の delay filter を無効化する"""
+        configmap_name = _ENVOY_EGRESS_MAP[service]
+        cm = self.core_v1.read_namespaced_config_map(name=configmap_name, namespace=namespace)
         yaml_str = cm.data["envoy.yaml"]
         yaml_str = re.sub(r"(fixed_delay:\s*)[\d.]+s", r"\g<1>0s", yaml_str, count=1)
         yaml_str = re.sub(
@@ -269,10 +274,8 @@ class ChaosAgent:
             flags=re.DOTALL,
         )
         cm.data["envoy.yaml"] = yaml_str
-        self.core_v1.patch_namespaced_config_map(
-            name="envoy-service-b-egress", namespace=namespace, body=cm
-        )
-        logger.info("envoy delay filter disabled")
+        self.core_v1.patch_namespaced_config_map(name=configmap_name, namespace=namespace, body=cm)
+        logger.info(f"envoy delay filter disabled on {configmap_name}")
 
     def _rollout_restart(self, namespace: str, service: str):
         """Deployment を rolling restart して新 ConfigMap を反映する"""
@@ -285,27 +288,27 @@ class ChaosAgent:
 
     def http_error_inject(self, experiment: Experiment):
         numerator = int(experiment.fault_rate * 100)
-        self._patch_envoy_fault(experiment.namespace, numerator)
-        self._rollout_restart(experiment.namespace, "service-a")
+        self._patch_envoy_fault(experiment.namespace, experiment.service, numerator)
+        self._rollout_restart(experiment.namespace, experiment.service)
         # Envoy ローリング再起動が完了するまで待機 (~30s, ADR 055)
         time.sleep(35)
-        logger.info(f"[{experiment.experiment_id}] Envoy abort filter active: {numerator}% errors")
+        logger.info(f"[{experiment.experiment_id}] Envoy abort filter active on {experiment.service}: {numerator}% errors")
 
     def http_error_remove(self, experiment: Experiment):
-        self._patch_envoy_fault(experiment.namespace, 0)
-        self._rollout_restart(experiment.namespace, "service-a")
-        logger.info(f"[{experiment.experiment_id}] Envoy abort filter disabled")
+        self._patch_envoy_fault(experiment.namespace, experiment.service, 0)
+        self._rollout_restart(experiment.namespace, experiment.service)
+        logger.info(f"[{experiment.experiment_id}] Envoy abort filter disabled on {experiment.service}")
 
     def network_latency_inject(self, experiment: Experiment):
-        self._patch_envoy_delay(experiment.namespace, experiment.latency_ms)
-        self._rollout_restart(experiment.namespace, "service-a")
+        self._patch_envoy_delay(experiment.namespace, experiment.service, experiment.latency_ms)
+        self._rollout_restart(experiment.namespace, experiment.service)
         time.sleep(35)
-        logger.info(f"[{experiment.experiment_id}] Envoy delay filter active: {experiment.latency_ms}ms")
+        logger.info(f"[{experiment.experiment_id}] Envoy delay filter active on {experiment.service}: {experiment.latency_ms}ms")
 
     def network_latency_remove(self, experiment: Experiment):
-        self._remove_envoy_delay(experiment.namespace)
-        self._rollout_restart(experiment.namespace, "service-a")
-        logger.info(f"[{experiment.experiment_id}] Envoy delay filter disabled")
+        self._remove_envoy_delay(experiment.namespace, experiment.service)
+        self._rollout_restart(experiment.namespace, experiment.service)
+        logger.info(f"[{experiment.experiment_id}] Envoy delay filter disabled on {experiment.service}")
 
     def _emergency_recover(self, experiment: Experiment):
         """Envoy 系実験の緊急回復。network_latency は delay 除去のみ、http_error_inject は scale-to-0 後に fault 除去。"""

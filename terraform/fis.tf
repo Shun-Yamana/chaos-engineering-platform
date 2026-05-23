@@ -2,7 +2,8 @@
 # chaos/agent.py が FIS_TEMPLATE_SERVICE_A / FIS_TEMPLATE_SERVICE_B 環境変数で参照する
 
 locals {
-  fis_services = toset(["service-a", "service-b"])
+  fis_services       = toset(["service-a", "service-b"])          # network_latency 用（将来予約）
+  fis_fault_services = toset(["service-b", "service-c"])          # pod_kill / cpu_stress / memory_stress
 }
 
 # ---------------------------------------------------------------------------
@@ -139,7 +140,8 @@ output "fis_template_service_b_id" {
 # ---------------------------------------------------------------------------
 
 resource "aws_fis_experiment_template" "pod_kill" {
-  description = "Pod kill injection for service-b (aws:eks:pod-delete)"
+  for_each    = local.fis_fault_services
+  description = "Pod kill injection for ${each.key} (aws:eks:pod-delete)"
   role_arn    = aws_iam_role.fis_execution.arn
 
   stop_condition {
@@ -156,7 +158,7 @@ resource "aws_fis_experiment_template" "pod_kill" {
       clusterIdentifier = module.eks.cluster_name
       namespace         = "default"
       selectorType      = "labelSelector"
-      selectorValue     = "app=service-b"
+      selectorValue     = "app=${each.key}"
     }
   }
 
@@ -191,7 +193,7 @@ resource "aws_fis_experiment_template" "pod_kill" {
     outputs {
       s3_configuration {
         bucket_name = aws_s3_bucket.fis_reports.bucket
-        prefix      = "pod_kill"
+        prefix      = "pod_kill/${each.key}"
       }
     }
 
@@ -209,7 +211,8 @@ resource "aws_fis_experiment_template" "pod_kill" {
 # ---------------------------------------------------------------------------
 
 resource "aws_fis_experiment_template" "cpu_stress" {
-  description = "CPU stress injection for service-b (aws:eks:pod-cpu-stress)"
+  for_each    = local.fis_fault_services
+  description = "CPU stress injection for ${each.key} (aws:eks:pod-cpu-stress)"
   role_arn    = aws_iam_role.fis_execution.arn
 
   stop_condition {
@@ -226,7 +229,7 @@ resource "aws_fis_experiment_template" "cpu_stress" {
       clusterIdentifier = module.eks.cluster_name
       namespace         = "default"
       selectorType      = "labelSelector"
-      selectorValue     = "app=service-b"
+      selectorValue     = "app=${each.key}"
     }
   }
 
@@ -276,7 +279,7 @@ resource "aws_fis_experiment_template" "cpu_stress" {
     outputs {
       s3_configuration {
         bucket_name = aws_s3_bucket.fis_reports.bucket
-        prefix      = "cpu_stress"
+        prefix      = "cpu_stress/${each.key}"
       }
     }
 
@@ -295,7 +298,8 @@ resource "aws_fis_experiment_template" "cpu_stress" {
 # ---------------------------------------------------------------------------
 
 resource "aws_fis_experiment_template" "memory_stress" {
-  description = "Memory stress injection for service-b (aws:eks:pod-memory-stress)"
+  for_each    = local.fis_fault_services
+  description = "Memory stress injection for ${each.key} (aws:eks:pod-memory-stress)"
   role_arn    = aws_iam_role.fis_execution.arn
 
   stop_condition {
@@ -312,7 +316,7 @@ resource "aws_fis_experiment_template" "memory_stress" {
       clusterIdentifier = module.eks.cluster_name
       namespace         = "default"
       selectorType      = "labelSelector"
-      selectorValue     = "app=service-b"
+      selectorValue     = "app=${each.key}"
     }
   }
 
@@ -362,7 +366,7 @@ resource "aws_fis_experiment_template" "memory_stress" {
     outputs {
       s3_configuration {
         bucket_name = aws_s3_bucket.fis_reports.bucket
-        prefix      = "memory_stress"
+        prefix      = "memory_stress/${each.key}"
       }
     }
 
@@ -375,17 +379,17 @@ resource "aws_fis_experiment_template" "memory_stress" {
   })
 }
 
-output "fis_template_pod_kill_id" {
-  description = "FIS experiment template ID for pod_kill"
-  value       = aws_fis_experiment_template.pod_kill.id
+output "fis_template_pod_kill_ids" {
+  description = "FIS experiment template IDs for pod_kill (keyed by service)"
+  value       = { for k, v in aws_fis_experiment_template.pod_kill : k => v.id }
 }
 
-output "fis_template_cpu_stress_id" {
-  description = "FIS experiment template ID for cpu_stress"
-  value       = aws_fis_experiment_template.cpu_stress.id
+output "fis_template_cpu_stress_ids" {
+  description = "FIS experiment template IDs for cpu_stress (keyed by service)"
+  value       = { for k, v in aws_fis_experiment_template.cpu_stress : k => v.id }
 }
 
-output "fis_template_memory_stress_id" {
-  description = "FIS experiment template ID for memory_stress"
-  value       = aws_fis_experiment_template.memory_stress.id
+output "fis_template_memory_stress_ids" {
+  description = "FIS experiment template IDs for memory_stress (keyed by service)"
+  value       = { for k, v in aws_fis_experiment_template.memory_stress : k => v.id }
 }

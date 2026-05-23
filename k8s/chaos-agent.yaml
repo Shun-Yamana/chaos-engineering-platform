@@ -82,12 +82,23 @@ spec:
               value: chaos-platform-experiment-history
             - name: AWS_REGION
               value: ap-northeast-1
-            - name: TRAFFIC_GEN_INTERVAL
-              value: "30"
-            - name: ALB_ORIGIN_SECRET
-              value: BnN7Ehj3Uc2xCgN7SXl87nsy7hqq7s5V
-            - name: SERVICE_A_AGGREGATE_URL
-              value: "http://service-a.default/aggregate/1"
+            # FIS テンプレート ID は terraform apply 後に CI/CD で kubectl set env により設定する
+            - name: FIS_TEMPLATE_SERVICE_A
+              value: ""
+            - name: FIS_TEMPLATE_SERVICE_B
+              value: ""
+            - name: FIS_TEMPLATE_POD_KILL_SERVICE_B
+              value: ""
+            - name: FIS_TEMPLATE_POD_KILL_SERVICE_C
+              value: ""
+            - name: FIS_TEMPLATE_CPU_STRESS_SERVICE_B
+              value: ""
+            - name: FIS_TEMPLATE_CPU_STRESS_SERVICE_C
+              value: ""
+            - name: FIS_TEMPLATE_MEMORY_STRESS_SERVICE_B
+              value: ""
+            - name: FIS_TEMPLATE_MEMORY_STRESS_SERVICE_C
+              value: ""
           resources:
             requests:
               cpu: "64m"
