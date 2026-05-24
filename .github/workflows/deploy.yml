@@ -77,13 +77,13 @@ jobs:
 
       - name: Apply ingress
         env:
-          CHAOS_ALB_LOGS_BUCKET: ${{ secrets.ALB_LOGS_BUCKET }}
+          ALB_LOGS_BUCKET: ${{ secrets.ALB_LOGS_BUCKET }}
           CLOUDFRONT_ORIGIN_SECRET: ${{ secrets.CLOUDFRONT_ORIGIN_SECRET }}
         run: |
           sed \
-            -e "s|CHAOS_ALB_LOGS_BUCKET|$CHAOS_ALB_LOGS_BUCKET|g" \
-            -e "s|CLOUDFRONT_ORIGIN_SECRET|$CLOUDFRONT_ORIGIN_SECRET|g" \
-            k8s/ingress.yaml | kubectl apply -f -
+            -e "s|\${alb_logs_bucket}|$ALB_LOGS_BUCKET|g" \
+            -e "s|\${origin_secret}|$CLOUDFRONT_ORIGIN_SECRET|g" \
+            k8s/ingress.yaml.tpl | kubectl apply -f -
 
       - name: Deploy service-a
         run: |
