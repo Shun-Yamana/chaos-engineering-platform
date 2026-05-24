@@ -10,9 +10,8 @@ import psutil
 from fastapi import FastAPI, HTTPException, Request
 
 from aws_xray_sdk.core import xray_recorder, patch_all
-from aws_xray_sdk.core.async_context import AsyncContext
 
-xray_recorder.configure(context_missing="LOG_ERROR", context=AsyncContext())
+xray_recorder.configure(context_missing="LOG_ERROR")
 patch_all()
 
 logging.basicConfig(level=logging.INFO)
