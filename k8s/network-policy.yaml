@@ -25,7 +25,7 @@ spec:
     - Ingress
     - Egress
 ---
-# ② service-a: Ingress from service-b only / Egress CoreDNS only
+# ② service-a: Ingress from ALB + service-b / Egress service-b + CoreDNS + AWS API
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -40,6 +40,10 @@ spec:
     - Egress
   ingress:
     - from:
+        - ipBlock:
+            cidr: 10.0.0.0/24
+        - ipBlock:
+            cidr: 10.0.1.0/24
         - podSelector:
             matchLabels:
               app: service-b
@@ -47,6 +51,13 @@ spec:
         - protocol: TCP
           port: 8000
   egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: service-b
+      ports:
+        - protocol: TCP
+          port: 8000
     - to:
         - namespaceSelector:
             matchLabels:
@@ -56,6 +67,12 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
 ---
 # ③ service-b: Ingress from ALB public subnets / Egress service-a + CoreDNS
 apiVersion: networking.k8s.io/v1
