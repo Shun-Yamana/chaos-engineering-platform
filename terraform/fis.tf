@@ -166,6 +166,11 @@ resource "aws_fis_experiment_template" "pod_kill" {
     name      = "kill-pod"
     action_id = "aws:eks:pod-delete"
 
+    parameter {
+      key   = "kubernetesServiceAccount"
+      value = "default"
+    }
+
     target {
       key   = "Pods"
       value = "pods"
@@ -238,7 +243,7 @@ resource "aws_fis_experiment_template" "cpu_stress" {
     action_id = "aws:eks:pod-cpu-stress"
 
     parameter {
-      key   = "cpuPercentage"
+      key   = "percent"
       value = "80"
     }
 
@@ -325,7 +330,7 @@ resource "aws_fis_experiment_template" "memory_stress" {
     action_id = "aws:eks:pod-memory-stress"
 
     parameter {
-      key   = "memoryPercentage"
+      key   = "percent"
       value = "95"
     }
 
