@@ -95,8 +95,8 @@ EKS Fargate が Pod を起動するときに AWS が内部で使うロール。P
   "Statement": [
     {
       "Sid": "DynamoDB",
-      "Action": ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:UpdateItem"],
-      "Resource": "arn:aws:dynamodb:<REGION>:<ACCOUNT_ID>:table/chaos-experiments"
+      "Action": ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:Scan"],
+      "Resource": "arn:aws:dynamodb:<REGION>:<ACCOUNT_ID>:table/chaos-platform-experiment-history"
     },
     {
       "Sid": "FISStart",
@@ -122,7 +122,9 @@ EKS Fargate が Pod を起動するときに AWS が内部で使うロール。P
 }
 ```
 
+> `dynamodb:Scan` は `_scan_pending()`（pending 実験の一覧取得）に必要。リソースは experiment_history テーブルのみに絞っている。
 > `FISStart` にタグ条件を追加。`Project: chaos-platform` タグが付いた FIS テンプレートだけ起動できる。
+> `fis:GetExperimentTemplate`・`fis:CreateExperimentTemplate`・`fis:DeleteExperimentTemplate` は agent が使用しないため付与しない（ADR 069）。
 
 ### K8s RBAC（IAM ではなく K8s 側の権限）
 

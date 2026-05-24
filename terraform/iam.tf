@@ -141,37 +141,7 @@ resource "aws_iam_policy" "chaos_agent" {
         Sid      = "DynamoDB"
         Effect   = "Allow"
         Action   = ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:Scan"]
-        Resource = "arn:aws:dynamodb:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/chaos-*"
-      },
-      {
-        Sid    = "FISTemplateRead"
-        Effect = "Allow"
-        Action = ["fis:GetExperimentTemplate"]
-        Resource = "arn:aws:fis:${var.aws_region}:${data.aws_caller_identity.current.account_id}:experiment-template/*"
-        Condition = {
-          StringEquals = { "aws:ResourceTag/Project" = "chaos-platform" }
-        }
-      },
-      {
-        Sid    = "FISTemplateCreate"
-        Effect = "Allow"
-        Action = ["fis:CreateExperimentTemplate"]
-        Resource = [
-          "arn:aws:fis:${var.aws_region}:${data.aws_caller_identity.current.account_id}:experiment-template/*",
-          "arn:aws:fis:${var.aws_region}:${data.aws_caller_identity.current.account_id}:action/*",
-        ]
-        Condition = {
-          StringEquals = { "aws:RequestTag/Project" = "chaos-platform" }
-        }
-      },
-      {
-        Sid    = "FISTemplateDelete"
-        Effect = "Allow"
-        Action = ["fis:DeleteExperimentTemplate"]
-        Resource = "arn:aws:fis:${var.aws_region}:${data.aws_caller_identity.current.account_id}:experiment-template/*"
-        Condition = {
-          StringEquals = { "aws:ResourceTag/Temporary" = "true" }
-        }
+        Resource = aws_dynamodb_table.experiment_history.arn
       },
       {
         Sid      = "FISStart"
