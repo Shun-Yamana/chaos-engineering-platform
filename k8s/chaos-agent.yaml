@@ -1,5 +1,4 @@
-# CHAOS_AGENT_ROLE_ARN / FIS_TEMPLATE_* / TABLE_NAME は
-# terraform apply 後に CI/CD で kubectl set env により設定する
+# FIS_TEMPLATE_* は deploy.yml の sed で GitHub Secrets から注入される
 ---
 apiVersion: v1
 kind: ServiceAccount
