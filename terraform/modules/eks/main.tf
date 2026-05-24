@@ -201,20 +201,8 @@ resource "aws_iam_role_policy_attachment" "fargate_pod_execution_policy" {
 }
 
 # ---------------------------------------------------------------------------
-# Fargate プロファイル × 4 (ADR 011 item 6)
+# Fargate プロファイル (観測系のみ) — default/chaos は EC2 ノードへ移行
 # ---------------------------------------------------------------------------
-
-resource "aws_eks_fargate_profile" "default" {
-  cluster_name           = aws_eks_cluster.main.name
-  fargate_profile_name   = "${var.project_name}-fargate-default"
-  pod_execution_role_arn = aws_iam_role.fargate_pod_execution.arn
-  subnet_ids             = var.private_subnet_ids
-
-  selector { namespace = "default" }
-
-  tags       = var.tags
-  depends_on = [aws_iam_role_policy_attachment.fargate_pod_execution_policy]
-}
 
 resource "aws_eks_fargate_profile" "kube_system" {
   cluster_name           = aws_eks_cluster.main.name
@@ -223,18 +211,6 @@ resource "aws_eks_fargate_profile" "kube_system" {
   subnet_ids             = var.private_subnet_ids
 
   selector { namespace = "kube-system" }
-
-  tags       = var.tags
-  depends_on = [aws_iam_role_policy_attachment.fargate_pod_execution_policy]
-}
-
-resource "aws_eks_fargate_profile" "chaos" {
-  cluster_name           = aws_eks_cluster.main.name
-  fargate_profile_name   = "${var.project_name}-fargate-chaos"
-  pod_execution_role_arn = aws_iam_role.fargate_pod_execution.arn
-  subnet_ids             = var.private_subnet_ids
-
-  selector { namespace = "chaos" }
 
   tags       = var.tags
   depends_on = [aws_iam_role_policy_attachment.fargate_pod_execution_policy]
