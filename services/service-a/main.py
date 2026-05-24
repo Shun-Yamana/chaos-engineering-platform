@@ -13,7 +13,6 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from aws_xray_sdk.core import xray_recorder, patch_all
 from aws_xray_sdk.core.async_context import AsyncContext
-from aws_xray_sdk.ext.fastapi import XRayMiddleware
 
 xray_recorder.configure(context_missing="LOG_ERROR", context=AsyncContext())
 patch_all()
@@ -32,8 +31,6 @@ app.add_middleware(
     allow_methods=["GET"],
     allow_headers=["*"],
 )
-app.add_middleware(XRayMiddleware, recorder=xray_recorder)
-
 
 @app.middleware("http")
 async def _annotate_experiment_id(request: Request, call_next):

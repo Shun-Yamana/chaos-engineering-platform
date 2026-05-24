@@ -11,7 +11,6 @@ from fastapi import FastAPI, HTTPException, Request
 
 from aws_xray_sdk.core import xray_recorder, patch_all
 from aws_xray_sdk.core.async_context import AsyncContext
-from aws_xray_sdk.ext.fastapi import XRayMiddleware
 
 xray_recorder.configure(context_missing="LOG_ERROR", context=AsyncContext())
 patch_all()
@@ -20,7 +19,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="service-b")
-app.add_middleware(XRayMiddleware, recorder=xray_recorder)
 
 
 @app.middleware("http")
