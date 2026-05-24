@@ -73,7 +73,7 @@ spec:
           emptyDir: {}
       containers:
         - name: chaos-agent
-          image: 203553641035.dkr.ecr.ap-northeast-1.amazonaws.com/chaos-platform/chaos-agent:latest
+          image: CHAOS_AGENT_IMAGE
           securityContext:
             runAsNonRoot: true
             allowPrivilegeEscalation: false

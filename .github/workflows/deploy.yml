@@ -49,9 +49,8 @@ jobs:
         run: |
           ECR=${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
           IMAGE=$ECR/chaos-platform/${{ matrix.service }}:${{ github.sha }}
-          docker build -t $IMAGE -t $ECR/chaos-platform/${{ matrix.service }}:latest ${{ matrix.context }}
+          docker build -t $IMAGE ${{ matrix.context }}
           docker push $IMAGE
-          docker push $ECR/chaos-platform/${{ matrix.service }}:latest
 
   deploy:
     name: Deploy to EKS
