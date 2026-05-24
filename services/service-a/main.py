@@ -114,6 +114,8 @@ class _CircuitBreaker:
 _product_cb = _CircuitBreaker()
 _product_cache: dict[str, tuple[dict, float]] = {}
 
+_aggregate_cb = _CircuitBreaker()
+
 _inventory_cb = _CircuitBreaker()
 _inventory_cb._FAIL_THRESH = 3   # service-d は非クリティカル: 3回失敗で即 OPEN
 
@@ -299,35 +301,35 @@ async def get_item(item_id: int):
 async def aggregate(item_id: int):
     """
     service-b の /data/{item_id} を Envoy sidecar (localhost:9001) 経由で呼び出す。
-    Envoy が 200ms でタイムアウト + outlier detection でエジェクト。
-    失敗時は stale cache（TTL=30s）にフォールバック。
-    最大 2 リトライ（指数バックオフ + jitter）。
+    Envoy が 200ms でタイムアウト + outlier_detection でエジェクト。
+    _aggregate_cb が5回失敗で open → stale cache を即返す（cpu_stress 対策）。
     """
     start = monotonic()
+    circuit_state = _aggregate_cb.state
 
-    # live call 1回だけ試みる（Envoy の 200ms timeout が保護）
-    # 成功: キャッシュ更新して返す
-    # 失敗: stale cache にフォールバック（TTL なし — fault 中は何分経っても stale を返す）
-    try:
-        resp = await _http_aggregate.get(f"{SERVICE_B_INTERNAL_URL}/data/{item_id}")
-        resp.raise_for_status()
-        data = resp.json()
-        _stale_cache[item_id] = (data, monotonic())
-        duration_ms = (monotonic() - start) * 1000
-        _emit_aggregate_emf(duration_ms, fallback=False, circuit_open=False)
-        return data
-    except Exception:
-        pass
+    if _aggregate_cb.allow_request():
+        try:
+            resp = await _http_aggregate.get(f"{SERVICE_B_INTERNAL_URL}/data/{item_id}")
+            resp.raise_for_status()
+            data = resp.json()
+            _stale_cache[item_id] = (data, monotonic())
+            _aggregate_cb.record_success()
+            duration_ms = (monotonic() - start) * 1000
+            _emit_aggregate_emf(duration_ms, fallback=False, circuit_open=False)
+            return data
+        except Exception:
+            _aggregate_cb.record_failure()
+            circuit_state = _aggregate_cb.state
 
-    # live 失敗 → stale cache（age 問わず返す: fault 期間中はキャッシュが唯一の防衛線）
+    # CB open or live 失敗 → stale cache（fault 期間中はキャッシュが唯一の防衛線）
     cached = _stale_cache.get(item_id)
     if cached:
         duration_ms = (monotonic() - start) * 1000
-        _emit_aggregate_emf(duration_ms, fallback=True, circuit_open=False)
-        return {**cached[0], "_stale": True, "_circuit_open": False}
+        _emit_aggregate_emf(duration_ms, fallback=True, circuit_open=circuit_state != "closed")
+        return {**cached[0], "_stale": True, "_circuit_open": circuit_state != "closed"}
 
     duration_ms = (monotonic() - start) * 1000
-    _emit_aggregate_emf(duration_ms, fallback=False, circuit_open=False)
+    _emit_aggregate_emf(duration_ms, fallback=False, circuit_open=circuit_state != "closed")
     raise HTTPException(status_code=502, detail="service-b unavailable and no stale cache")
 
 
