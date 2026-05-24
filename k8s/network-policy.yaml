@@ -74,7 +74,7 @@ spec:
         - protocol: TCP
           port: 443
 ---
-# ③ service-b: Ingress from ALB public subnets / Egress service-a + CoreDNS
+# ③ service-b: Ingress from ALB + service-a / Egress service-c + CoreDNS + AWS API
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -93,6 +93,9 @@ spec:
             cidr: 10.0.0.0/24
         - ipBlock:
             cidr: 10.0.1.0/24
+        - podSelector:
+            matchLabels:
+              app: service-a
       ports:
         - protocol: TCP
           port: 8000
@@ -100,7 +103,7 @@ spec:
     - to:
         - podSelector:
             matchLabels:
-              app: service-a
+              app: service-c
       ports:
         - protocol: TCP
           port: 8000
@@ -113,6 +116,12 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
 ---
 # ④ chaos-agent: Egress K8s API (VPC) + AWS API (NAT) + CoreDNS
 apiVersion: networking.k8s.io/v1
