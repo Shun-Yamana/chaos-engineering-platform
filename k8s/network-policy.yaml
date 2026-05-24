@@ -123,6 +123,36 @@ spec:
         - protocol: TCP
           port: 443
 ---
+# ⑤ FIS Pod: experimentId ラベルを持つ Pod に AWS FIS control plane への heartbeat を許可
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: fis-agent
+  namespace: default
+spec:
+  podSelector:
+    matchExpressions:
+      - key: experimentId
+        operator: Exists
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
 # ④ chaos-agent: Egress K8s API (VPC) + AWS API (NAT) + CoreDNS
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

@@ -1,0 +1,31 @@
+# RBAC for FIS EKS pod-delete action
+# FIS pod runs as system:serviceaccount:default:default and needs:
+#   - ConfigMap create/get/patch (fisconfigmap-* for coordination)
+#   - Pod delete (the actual fault injection)
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: fis-agent
+  namespace: default
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create", "get", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: fis-agent
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: default
+    namespace: default
+roleRef:
+  kind: Role
+  name: fis-agent
+  apiGroup: rbac.authorization.k8s.io
