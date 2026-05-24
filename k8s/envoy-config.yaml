@@ -39,6 +39,10 @@ data:
                     route:
                       cluster: service_b_cluster
                       timeout: 0.2s   # 200ms: service-a /aggregate の保護閾値
+                      retry_policy:
+                        retry_on: "connect-failure,reset"
+                        num_retries: 1
+                        per_try_timeout: 0.1s   # 100ms = route_timeout / (num_retries+1)
               http_filters:
               - name: envoy.filters.http.fault
                 typed_config:
