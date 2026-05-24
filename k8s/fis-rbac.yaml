@@ -1,7 +1,8 @@
-# RBAC for FIS EKS pod-delete action
+# RBAC for FIS EKS actions (pod-delete, pod-cpu-stress, pod-memory-stress, pod-network-latency)
 # FIS pod runs as system:serviceaccount:default:default and needs:
 #   - ConfigMap create/get/patch (fisconfigmap-* for coordination)
-#   - Pod delete (the actual fault injection)
+#   - Pod get/list/delete (pod-delete action)
+#   - Pod exec (cpu-stress / memory-stress inject stress-ng into target pod)
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -15,6 +16,12 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["pods/ephemeralcontainers"]
+    verbs: ["get", "update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

@@ -123,7 +123,43 @@ spec:
         - protocol: TCP
           port: 443
 ---
-# ⑤ FIS Pod: experimentId ラベルを持つ Pod に AWS FIS control plane への heartbeat を許可
+# ⑤ metrics-server: K8s API (443) + kubelet (10250) + CoreDNS へのアクセスを許可
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: metrics-server
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      k8s-app: metrics-server
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 10250
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 10250
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# ⑥ FIS Pod: experimentId ラベルを持つ Pod に AWS FIS control plane への heartbeat を許可
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
