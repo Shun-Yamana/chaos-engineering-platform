@@ -148,7 +148,7 @@ def handler(event, context):
 
     if method == "GET" and path == "/experiments":
         service = query.get("service")
-        limit = int(query.get("limit", "20"))
+        limit = min(int(query.get("limit", "20")), 100)
         return list_experiments(service, limit)
 
     if method == "GET" and path.startswith("/experiments/"):

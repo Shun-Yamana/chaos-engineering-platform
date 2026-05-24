@@ -24,9 +24,11 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="service-a")
 
 _CORS_ORIGINS = [o for o in os.getenv("CORS_ORIGINS", "").split(",") if o]
+if not _CORS_ORIGINS:
+    raise RuntimeError("CORS_ORIGINS environment variable is required (e.g. http://localhost:5173)")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_CORS_ORIGINS or ["*"],
+    allow_origins=_CORS_ORIGINS,
     allow_methods=["GET"],
     allow_headers=["*"],
 )

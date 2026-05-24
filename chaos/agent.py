@@ -515,10 +515,15 @@ class ChaosAgentPoller:
         self._running: dict[str, threading.Thread] = {}
 
     def _scan_pending(self) -> list[dict]:
-        resp = self._table.scan(
-            FilterExpression=Attr("status").eq("pending"),
-        )
-        return resp.get("Items", [])
+        items = []
+        kwargs: dict = {"FilterExpression": Attr("status").eq("pending")}
+        while True:
+            resp = self._table.scan(**kwargs)
+            items.extend(resp.get("Items", []))
+            if "LastEvaluatedKey" not in resp:
+                break
+            kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+        return items
 
     def _claim(self, item: dict) -> bool:
         """pending → running へ条件付き更新。競合時は False を返す。"""
