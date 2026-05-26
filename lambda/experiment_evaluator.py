@@ -20,10 +20,11 @@ logger.setLevel(logging.INFO)
 cloudwatch = boto3.client("cloudwatch")
 dynamodb = boto3.resource("dynamodb")
 
-EXPERIMENT_TABLE = os.environ["EXPERIMENT_TABLE"]
-ALB_ARN_SUFFIX = os.environ.get("ALB_ARN_SUFFIX", "")
+EXPERIMENT_TABLE  = os.environ["EXPERIMENT_TABLE"]
+ALB_ARN_SUFFIX    = os.environ.get("ALB_ARN_SUFFIX", "")
 SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
-# CloudWatch メトリクス遅延バッファ: MAX(TTR=90s) + 3分 = 約 5 分
+EKS_CLUSTER_NAME  = os.environ.get("EKS_CLUSTER_NAME", "")
+# CloudWatch メトリクス遅延バッファ
 _CW_BUFFER_S = int(os.environ.get("CW_BUFFER_SECONDS", "300"))
 
 _FAULT_LABELS = {
@@ -32,6 +33,7 @@ _FAULT_LABELS = {
     "memory_stress":     "Memory Stress",
     "http_error_inject": "HTTP Error Inject",
     "network_latency":   "Network Latency",
+    "node_failure":      "Node Failure",
 }
 
 
@@ -99,6 +101,59 @@ def get_emf_p95_ms(metric: str, service: str, start: datetime, end: datetime) ->
     dims = [{"Name": "Service", "Value": service}]
     p95_ms = _query_p95(metric, "ChaosExperiment", dims, start, end)
     return round(p95_ms, 2) if p95_ms is not None else None
+
+
+def get_container_restarts_delta(service: str, namespace: str,
+                                 start: datetime, end: datetime) -> float | None:
+    """Container Insights: fault 区間での pod_number_of_container_restarts の増分を返す。
+    OOMKill 確認用（ADR 082）。EKS_CLUSTER_NAME 未設定時は None を返す。
+    """
+    if not EKS_CLUSTER_NAME:
+        return None
+    raw = max(int((end - start).total_seconds()), 60)
+    period = ((raw + 59) // 60) * 60
+    try:
+        paginator = cloudwatch.get_paginator("list_metrics")
+        pages = paginator.paginate(
+            Namespace="ContainerInsights",
+            MetricName="pod_number_of_container_restarts",
+            Dimensions=[
+                {"Name": "ClusterName", "Value": EKS_CLUSTER_NAME},
+                {"Name": "Namespace",   "Value": namespace},
+            ],
+        )
+        metrics = [m for page in pages for m in page["Metrics"]]
+        # service-b-* の Pod を対象にフィルタ
+        target = [
+            m for m in metrics
+            if any(d["Name"] == "PodName" and d["Value"].startswith(service)
+                   for d in m["Dimensions"])
+        ]
+        if not target:
+            return None
+
+        total_max = 0.0
+        total_min = 0.0
+        for m in target:
+            dims = m["Dimensions"]
+            resp = cloudwatch.get_metric_statistics(
+                Namespace="ContainerInsights",
+                MetricName="pod_number_of_container_restarts",
+                Dimensions=dims,
+                StartTime=start,
+                EndTime=end,
+                Period=period,
+                Statistics=["Maximum", "Minimum"],
+            )
+            dp = resp.get("Datapoints", [])
+            if not dp:
+                continue
+            total_max += max(d["Maximum"] for d in dp)
+            total_min += min(d["Minimum"] for d in dp)
+        return total_max - total_min
+    except Exception as e:
+        logger.warning(f"Container Insights query failed: {e}")
+        return None
 
 
 def get_emf_max(metric: str, service: str, start: datetime, end: datetime) -> float | None:
@@ -185,18 +240,18 @@ def evaluate_cpu_stress(fault_start: datetime, fault_end: datetime) -> tuple[lis
 
 
 def evaluate_memory_stress(fault_start: datetime, fault_end: datetime) -> tuple[list, list]:
+    restarts_delta = get_container_restarts_delta("service-b", "default", fault_start, fault_end)
     phase_a = [
-        # service-b に MEMORY_STRESS_MB を注入しメモリ圧迫状態でも ALB エラーが出ないことを確認
-        # service-b は ProcessMemoryMB EMF を出力しないため memory 量のチェックは行わない
         _check("error_rate", get_alb_error_rate(fault_start, fault_end), "<=", 0.05),
+        # Chaos Mesh StressChaos が service-b の cgroup に届いて OOMKill が発生したか確認 (ADR 082)
+        _check("oomkill_confirmed", restarts_delta, ">=", 1),
     ]
-    # MEMORY_STRESS_MB 削除後 rolling update (~90s) が走るため fault_end + 90s 以降を計測
-    ttr_s = _first_below_threshold(get_alb_error_rate, 0.005, fault_end, 240)
+    # Chaos Mesh CR 削除後は即時回復（rolling update なし）→ オフセット不要 (ADR 082)
+    ttr_s = _first_below_threshold(get_alb_error_rate, 0.005, fault_end, 90)
     phase_b = [
         _check("error_rate_recovery",
-               get_alb_error_rate(fault_end + timedelta(seconds=90),
-                                  fault_end + timedelta(seconds=240)),
-               "<=", 0.005, ttr_actual_s=ttr_s, ttr_limit_s=150),
+               get_alb_error_rate(fault_end, fault_end + timedelta(seconds=90)),
+               "<=", 0.005, ttr_actual_s=ttr_s, ttr_limit_s=30),
     ]
     return phase_a, phase_b
 
@@ -219,14 +274,12 @@ def evaluate_http_error_inject(item: dict, fault_start: datetime, fault_end: dat
         _check("auto_stopper_fired_within_6min",
                auto_stopper_latency_s, "<=", 360),
     ]
-    # emergency recover (scale=0 → scale back → rolling update) が fault_end+120s 頃に完了する。
-    # +180s に延ばして rolling update 末尾のエラー混入を回避する。
-    ttr_s = _first_below_threshold(get_alb_error_rate, 0.005, fault_end, 360)
+    # HTTPChaos CR 削除後は即時回復（rolling update なし）→ オフセット不要 (ADR 082)
+    ttr_s = _first_below_threshold(get_alb_error_rate, 0.005, fault_end, 90)
     phase_b = [
         _check("error_rate_recovery",
-               get_alb_error_rate(fault_end + timedelta(seconds=180),
-                                  fault_end + timedelta(seconds=360)),
-               "<=", 0.005, ttr_actual_s=ttr_s, ttr_limit_s=240),
+               get_alb_error_rate(fault_end, fault_end + timedelta(seconds=90)),
+               "<=", 0.005, ttr_actual_s=ttr_s, ttr_limit_s=30),
     ]
     return phase_a, phase_b
 
@@ -246,14 +299,27 @@ def evaluate_network_latency(fault_start: datetime, fault_end: datetime) -> tupl
     def service_a_p95_fn(s, e):
         return get_emf_p95_ms("AggregateDurationMs", "service-a", s, e)
 
-    # service-b rolling update (~90s) が measurement window に含まれるため
-    # 50ms は非現実的。Phase A の吸収基準 (<=250ms) と揃える。
-    ttr_s = _first_below_threshold(service_a_p95_fn, 250, fault_end, 240)
+    # NetworkChaos CR 削除後は tc netem 即時除去 → オフセット不要 (ADR 082)
+    ttr_s = _first_below_threshold(service_a_p95_fn, 250, fault_end, 90)
     phase_b = [
         _check("service_a_p95_recovery",
-               service_a_p95_fn(fault_end + timedelta(seconds=90),
-                                fault_end + timedelta(seconds=240)),
-               "<=", 250, ttr_actual_s=ttr_s, ttr_limit_s=150),
+               service_a_p95_fn(fault_end, fault_end + timedelta(seconds=90)),
+               "<=", 250, ttr_actual_s=ttr_s, ttr_limit_s=30),
+    ]
+    return phase_a, phase_b
+
+
+def evaluate_node_failure(fault_start: datetime, fault_end: datetime) -> tuple[list, list]:
+    phase_a = [
+        # EC2 ノード終了直後 PDB + replicas で大半のリクエストを吸収 (ADR 080)
+        _check("error_rate_during_fault",
+               get_alb_error_rate(fault_start, fault_end), "<=", 0.10),
+    ]
+    ttr_s = _first_below_threshold(get_alb_error_rate, 0.01, fault_end, 300)
+    phase_b = [
+        _check("error_rate_recovery",
+               get_alb_error_rate(fault_end, fault_end + timedelta(seconds=300)),
+               "<=", 0.01, ttr_actual_s=ttr_s, ttr_limit_s=300),
     ]
     return phase_a, phase_b
 
@@ -307,6 +373,8 @@ def evaluate(item: dict) -> dict:
         phase_a, phase_b = evaluate_http_error_inject(item, fault_start, fault_end)
     elif fault_type == "network_latency":
         phase_a, phase_b = evaluate_network_latency(fault_start, fault_end)
+    elif fault_type == "node_failure":
+        phase_a, phase_b = evaluate_node_failure(fault_start, fault_end)
     else:
         logger.warning(f"Unknown fault_type: {fault_type}")
         return {}

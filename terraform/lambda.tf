@@ -371,6 +371,7 @@ resource "aws_lambda_function" "experiment_evaluator" {
       ALB_ARN_SUFFIX     = data.aws_lb.service_b.arn_suffix
       CW_BUFFER_SECONDS  = "300"
       SLACK_WEBHOOK_URL  = var.slack_webhook_url
+      EKS_CLUSTER_NAME   = module.eks.cluster_name
     }
   }
 
