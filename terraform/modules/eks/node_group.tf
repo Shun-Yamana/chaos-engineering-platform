@@ -36,6 +36,11 @@ resource "aws_iam_role_policy_attachment" "eks_node_xray" {
   policy_arn = "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess"
 }
 
+resource "aws_iam_role_policy_attachment" "eks_node_ssm" {
+  role       = aws_iam_role.eks_node.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
 resource "aws_eks_node_group" "main" {
   cluster_name    = aws_eks_cluster.main.name
   node_group_name = "${var.project_name}-node-group"
@@ -59,5 +64,6 @@ resource "aws_eks_node_group" "main" {
     aws_iam_role_policy_attachment.eks_node_ecr,
     aws_iam_role_policy_attachment.eks_node_cni,
     aws_iam_role_policy_attachment.eks_node_xray,
+    aws_iam_role_policy_attachment.eks_node_ssm,
   ]
 }
