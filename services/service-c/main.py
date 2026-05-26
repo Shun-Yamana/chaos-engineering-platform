@@ -8,10 +8,21 @@ import threading
 import psutil
 from fastapi import FastAPI, HTTPException, Request
 
+import socket as _socket
+
 from aws_xray_sdk.core import xray_recorder, patch_all
 from aws_xray_sdk.core.async_context import AsyncContext
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
+
+
+def _resolve_xray_address(addr: str) -> str:
+    """Resolve hostname once at startup so sendto() never blocks on DNS."""
+    try:
+        host, port = addr.rsplit(":", 1)
+        return f"{_socket.gethostbyname(host)}:{port}"
+    except Exception:
+        return addr
 
 class XRayMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, recorder=None):
@@ -41,7 +52,7 @@ class XRayMiddleware(BaseHTTPMiddleware):
 xray_recorder.configure(
     context_missing="LOG_ERROR",
     context=AsyncContext(),
-    daemon_address="cloudwatch-agent.amazon-cloudwatch:2000",
+    daemon_address=_resolve_xray_address("cloudwatch-agent.amazon-cloudwatch:2000"),
 )
 patch_all()
 
