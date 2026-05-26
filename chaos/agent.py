@@ -24,6 +24,31 @@ dynamodb = boto3.resource(
 
 TABLE_NAME = os.environ.get("TABLE_NAME", "")
 
+# ---------------------------------------------------------------------------
+# Chaos Mesh CRD 定数 (ADR 079)
+# ---------------------------------------------------------------------------
+
+_CM_GROUP   = "chaos-mesh.org"
+_CM_VERSION = "v1alpha1"
+
+# fault_type → Chaos Mesh CRD plural name
+_CM_PLURAL = {
+    "pod_kill":        "podchaoses",
+    "cpu_stress":      "stresschaoses",
+    "memory_stress":   "stresschaoses",
+    "network_latency": "networkchaoses",
+}
+
+_CM_FAULT_TYPES = frozenset(_CM_PLURAL.keys())
+
+# Envoy egress ConfigMap マッピング (http_error_inject)
+_ENVOY_EGRESS_MAP = {
+    "service-a": "envoy-service-b-egress",
+    "service-b": "envoy-service-c-egress",
+}
+
+_FIS_TERMINAL_STATES = {"completed", "stopped", "failed"}
+
 
 @dataclass
 class Experiment:
@@ -31,7 +56,7 @@ class Experiment:
     name: str
     namespace: str
     service: str
-    fault_type: str        # pod_kill | cpu_stress | memory_stress | http_error_inject | network_latency
+    fault_type: str        # pod_kill | cpu_stress | memory_stress | http_error_inject | network_latency | node_failure
     duration_seconds: int
     error_rate_threshold: float
     burn_rate_threshold: float
@@ -43,36 +68,6 @@ class Experiment:
     memory_stress_mb: int = 150
 
 
-# fault_type × service → FIS テンプレート ID の環境変数名マッピング
-_FIS_FAULT_TEMPLATE_ENV = {
-    "pod_kill": {
-        "service-b": "FIS_TEMPLATE_POD_KILL_SERVICE_B",
-        "service-c": "FIS_TEMPLATE_POD_KILL_SERVICE_C",
-    },
-    "cpu_stress": {
-        "service-b": "FIS_TEMPLATE_CPU_STRESS_SERVICE_B",
-        "service-c": "FIS_TEMPLATE_CPU_STRESS_SERVICE_C",
-    },
-    "memory_stress": {
-        "service-b": "FIS_TEMPLATE_MEMORY_STRESS_SERVICE_B",
-        "service-c": "FIS_TEMPLATE_MEMORY_STRESS_SERVICE_C",
-    },
-}
-# ADR 057: network_latency は Envoy ベースに移行。将来の全通信遅延テスト用に残置。
-_NETWORK_LATENCY_TEMPLATE_ENV = {
-    "service-a": "FIS_TEMPLATE_SERVICE_A",
-    "service-b": "FIS_TEMPLATE_SERVICE_B",
-}
-# experiment.service → (Envoy ConfigMap 名) のマッピング
-# service-a Envoy = a→b 障害注入, service-b Envoy = b→c 障害注入
-_ENVOY_EGRESS_MAP = {
-    "service-a": "envoy-service-b-egress",
-    "service-b": "envoy-service-c-egress",
-}
-
-_FIS_TERMINAL_STATES = {"completed", "stopped", "failed"}
-
-
 class ChaosAgent:
     def __init__(self, kubeconfig_path: str | None = None):
         if kubeconfig_path:
@@ -80,15 +75,19 @@ class ChaosAgent:
         else:
             config.load_incluster_config()
 
-        self.core_v1 = client.CoreV1Api()
-        self.apps_v1 = client.AppsV1Api()
-        self.networking_v1 = client.NetworkingV1Api()
+        self.core_v1    = client.CoreV1Api()
+        self.apps_v1    = client.AppsV1Api()
+        self.custom_api = client.CustomObjectsApi()
+
         self.fis = boto3.client(
             "fis",
             region_name=os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION")),
         )
-        # 実行中の FIS 実験 ID を保持 (experiment_id → fis_experiment_id)
         self._active_fis: dict[str, str] = {}
+
+    # ---------------------------------------------------------------------------
+    # DynamoDB helpers
+    # ---------------------------------------------------------------------------
 
     def _record_experiment(self, experiment: Experiment, status: str, stop_reason: str = ""):
         table = dynamodb.Table(experiment.experiment_table)
@@ -97,17 +96,14 @@ class ChaosAgent:
 
         if status == "running":
             table.update_item(
-                Key={
-                    "experiment_id": experiment.experiment_id,
-                    "started_at": experiment.started_at or now,
-                },
+                Key={"experiment_id": experiment.experiment_id, "started_at": experiment.started_at or now},
                 UpdateExpression="SET #st = :status, expires_at = :exp",
                 ExpressionAttributeNames={"#st": "status"},
                 ExpressionAttributeValues={":status": status, ":exp": expires_at},
             )
         else:
             update_expr = "SET #st = :status, expires_at = :exp"
-            names = {"#st": "status"}
+            names  = {"#st": "status"}
             values = {":status": status, ":exp": expires_at}
             if stop_reason:
                 update_expr += ", stop_reason = :reason"
@@ -116,21 +112,25 @@ class ChaosAgent:
                 update_expr += ", stopped_at = :now"
                 values[":now"] = now
             table.update_item(
-                Key={
-                    "experiment_id": experiment.experiment_id,
-                    "started_at": experiment.started_at or now,
-                },
+                Key={"experiment_id": experiment.experiment_id, "started_at": experiment.started_at or now},
                 UpdateExpression=update_expr,
                 ExpressionAttributeNames=names,
                 ExpressionAttributeValues=values,
             )
 
-    def _get_deployment(self, namespace: str, service: str):
-        return self.apps_v1.read_namespaced_deployment(name=service, namespace=namespace)
+    def _get_dynamodb_item(self, experiment: Experiment) -> dict:
+        table = dynamodb.Table(experiment.experiment_table)
+        return table.get_item(Key={
+            "experiment_id": experiment.experiment_id,
+            "started_at": experiment.started_at,
+        }).get("Item", {})
+
+    # ---------------------------------------------------------------------------
+    # EXPERIMENT_ID (X-Ray アノテーション用)
+    # ---------------------------------------------------------------------------
 
     def _set_experiment_id(self, namespace: str, service: str, experiment_id: str):
-        """X-Ray アノテーション用に EXPERIMENT_ID を Deployment env にセットする"""
-        deployment = self._get_deployment(namespace, service)
+        deployment = self.apps_v1.read_namespaced_deployment(name=service, namespace=namespace)
         for container in deployment.spec.template.spec.containers:
             if container.name == service:
                 if container.env is None:
@@ -140,11 +140,9 @@ class ChaosAgent:
                 break
         deployment.metadata.resource_version = None
         self.apps_v1.patch_namespaced_deployment(name=service, namespace=namespace, body=deployment)
-        logger.info(f"EXPERIMENT_ID={experiment_id} set on {service}")
 
     def _clear_experiment_id(self, namespace: str, service: str):
-        """実験終了後に EXPERIMENT_ID env var を削除する"""
-        deployment = self._get_deployment(namespace, service)
+        deployment = self.apps_v1.read_namespaced_deployment(name=service, namespace=namespace)
         for container in deployment.spec.template.spec.containers:
             if container.name == service and container.env:
                 before = len(container.env)
@@ -154,135 +152,172 @@ class ChaosAgent:
                 break
         deployment.metadata.resource_version = None
         self.apps_v1.patch_namespaced_deployment(name=service, namespace=namespace, body=deployment)
-        logger.info(f"EXPERIMENT_ID cleared on {service}")
+
+    def _set_experiment_ids(self, experiment: Experiment):
+        for svc in ("service-a", "service-b", "service-c", "service-d"):
+            try:
+                self._set_experiment_id(experiment.namespace, svc, experiment.experiment_id)
+            except Exception as e:
+                logger.warning(f"[{experiment.experiment_id}] EXPERIMENT_ID patch failed on {svc}: {e}")
+
+    def _clear_experiment_ids(self, experiment: Experiment):
+        for svc in ("service-a", "service-b", "service-c", "service-d"):
+            try:
+                self._clear_experiment_id(experiment.namespace, svc)
+            except Exception as e:
+                logger.warning(f"[{experiment.experiment_id}] EXPERIMENT_ID clear failed on {svc}: {e}")
 
     # ---------------------------------------------------------------------------
-    # FIS helpers
+    # Chaos Mesh — CRD 管理 (ADR 079)
     # ---------------------------------------------------------------------------
 
-    def _get_fis_template_id(self, experiment: Experiment) -> str:
-        service_map = _FIS_FAULT_TEMPLATE_ENV.get(experiment.fault_type, {})
-        env_key = service_map.get(experiment.service, "")
-        if not env_key:
-            raise ValueError(f"No FIS template mapping for fault_type={experiment.fault_type}, service={experiment.service}")
-        template_id = os.environ.get(env_key, "")
-        if not template_id:
-            raise RuntimeError(f"Environment variable {env_key} is not set")
-        return template_id
+    def _cm_cr_name(self, experiment: Experiment) -> str:
+        return f"chaos-{experiment.experiment_id[:8]}"
 
-    def _fis_start_experiment(self, template_id: str, experiment_id: str) -> str:
-        resp = self.fis.start_experiment(
-            experimentTemplateId=template_id,
-            tags={"experiment_id": experiment_id},
+    def _build_chaos_cr(self, experiment: Experiment) -> tuple[str, dict]:
+        """(plural, manifest) を返す"""
+        name   = self._cm_cr_name(experiment)
+        plural = _CM_PLURAL[experiment.fault_type]
+
+        base = {
+            "apiVersion": f"{_CM_GROUP}/{_CM_VERSION}",
+            "metadata": {
+                "name": name,
+                "namespace": experiment.namespace,
+            },
+            "spec": {
+                "mode": "one" if experiment.fault_type == "pod_kill" else "all",
+                "selector": {
+                    "namespaces": [experiment.namespace],
+                    "labelSelectors": {"app": experiment.service},
+                },
+            },
+        }
+
+        if experiment.fault_type == "pod_kill":
+            base["kind"] = "PodChaos"
+            base["spec"]["action"] = "pod-kill"
+
+        elif experiment.fault_type == "cpu_stress":
+            base["kind"] = "StressChaos"
+            base["spec"]["stressors"] = {"cpu": {"workers": 2, "load": 80}}
+            base["spec"]["duration"] = f"{experiment.duration_seconds}s"
+
+        elif experiment.fault_type == "memory_stress":
+            base["kind"] = "StressChaos"
+            base["spec"]["stressors"] = {"memory": {"workers": 1, "size": f"{experiment.memory_stress_mb}MB"}}
+            base["spec"]["duration"] = f"{experiment.duration_seconds}s"
+
+        elif experiment.fault_type == "network_latency":
+            base["kind"] = "NetworkChaos"
+            base["spec"]["action"] = "delay"
+            base["spec"]["delay"] = {
+                "latency": f"{experiment.latency_ms}ms",
+                "correlation": "0",
+                "jitter": "0ms",
+            }
+            base["spec"]["direction"] = "to"
+            base["spec"]["duration"] = f"{experiment.duration_seconds}s"
+
+        return plural, base
+
+    def _cm_apply(self, plural: str, manifest: dict, namespace: str):
+        self.custom_api.create_namespaced_custom_object(
+            group=_CM_GROUP, version=_CM_VERSION,
+            namespace=namespace, plural=plural, body=manifest,
         )
-        return resp["experiment"]["id"]
 
-    def _fis_wait_and_monitor(self, fis_exp_id: str, experiment: Experiment) -> str:
-        """FIS 実験の完了を待機しつつ DynamoDB の停止フラグを監視する。
-        戻り値: "completed" | "stopped" | "failed"
-        """
-        table = dynamodb.Table(experiment.experiment_table)
-        _emergency_triggered = False
-
-        while True:
-            time.sleep(10)
-
-            resp = self.fis.get_experiment(id=fis_exp_id)
-            state = resp["experiment"]["state"]["status"]
-
-            if state in _FIS_TERMINAL_STATES:
-                logger.info(f"[{experiment.experiment_id}] FIS experiment {state}: {fis_exp_id}")
-                return state
-
-            item = table.get_item(Key={
-                "experiment_id": experiment.experiment_id,
-                "started_at": experiment.started_at,
-            }).get("Item", {})
-
-            if item.get("status") == "stopped":
-                logger.info(f"[{experiment.experiment_id}] external stop detected, stopping FIS")
-                try:
-                    self.fis.stop_experiment(id=fis_exp_id)
-                except Exception as e:
-                    logger.warning(f"[{experiment.experiment_id}] FIS stop error: {e}")
-                return "stopped"
-
-            if item.get("emergency_stop") and not _emergency_triggered:
-                _emergency_triggered = True
-                threading.Thread(
-                    target=self._emergency_recover_fis,
-                    args=(fis_exp_id, experiment),
-                    daemon=True,
-                    name=f"emergency-{experiment.experiment_id[:8]}",
-                ).start()
-
-    def _emergency_recover_fis(self, fis_exp_id: str, experiment: Experiment):
-        """FIS 管理実験の緊急回復: FIS 停止で障害注入を即時解除"""
+    def _cm_delete(self, plural: str, name: str, namespace: str):
         try:
-            self.fis.stop_experiment(id=fis_exp_id)
-            logger.info(f"[{experiment.experiment_id}] emergency: FIS experiment stopped")
+            self.custom_api.delete_namespaced_custom_object(
+                group=_CM_GROUP, version=_CM_VERSION,
+                namespace=namespace, plural=plural, name=name,
+            )
+        except ApiException as e:
+            if e.status != 404:
+                raise
+
+    def _cm_condition(self, plural: str, name: str, namespace: str, condition_type: str) -> bool:
+        try:
+            obj = self.custom_api.get_namespaced_custom_object(
+                group=_CM_GROUP, version=_CM_VERSION,
+                namespace=namespace, plural=plural, name=name,
+            )
+            for c in obj.get("status", {}).get("conditions", []):
+                if c.get("type") == condition_type and c.get("status") == "True":
+                    return True
+        except ApiException:
+            pass
+        return False
+
+    def _cm_wait_condition(self, plural: str, name: str, namespace: str,
+                           condition_type: str, timeout: int = 60) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self._cm_condition(plural, name, namespace, condition_type):
+                return True
+            time.sleep(3)
+        return False
+
+    def _cm_run(self, experiment: Experiment):
+        """Chaos Mesh 実験の実行・監視・クリーンアップ"""
+        plural, manifest = self._build_chaos_cr(experiment)
+        name = self._cm_cr_name(experiment)
+        namespace = experiment.namespace
+
+        self._cm_apply(plural, manifest, namespace)
+        logger.info(f"[{experiment.experiment_id}] ChaosMesh CR applied: {manifest['kind']}/{name}")
+
+        # 注入確認（最大60秒）
+        if not self._cm_wait_condition(plural, name, namespace, "AllInjected", timeout=60):
+            logger.warning(f"[{experiment.experiment_id}] AllInjected not reached within 60s, continuing")
+
+        if experiment.fault_type == "pod_kill":
+            # pod-kill は instantaneous — 回復確認して終了
+            self._cm_wait_condition(plural, name, namespace, "AllRecovered", timeout=30)
+            self._cm_delete(plural, name, namespace)
+            return
+
+        # duration ベースの実験：DynamoDB 停止フラグを監視しながら待機
+        completed = self._interruptible_sleep(experiment, experiment.duration_seconds)
+
+        # CR を削除して回復をトリガー（duration 自然期限の場合も明示的に削除）
+        self._cm_delete(plural, name, namespace)
+
+        if not self._cm_wait_condition(plural, name, namespace, "AllRecovered", timeout=30):
+            logger.warning(f"[{experiment.experiment_id}] AllRecovered not confirmed within 30s after delete")
+
+        if not completed:
+            logger.info(f"[{experiment.experiment_id}] ChaosMesh experiment stopped early")
+
+    def _cm_emergency_stop(self, experiment: Experiment):
+        """Chaos Mesh CR を即時削除して障害注入を解除"""
+        plural = _CM_PLURAL.get(experiment.fault_type, "")
+        if not plural:
+            return
+        name = self._cm_cr_name(experiment)
+        try:
+            self._cm_delete(plural, name, experiment.namespace)
+            logger.info(f"[{experiment.experiment_id}] emergency: ChaosMesh CR deleted")
         except Exception as e:
-            logger.error(f"[{experiment.experiment_id}] emergency_recover_fis failed: {e}")
+            logger.error(f"[{experiment.experiment_id}] emergency_cm_delete failed: {e}")
 
     # ---------------------------------------------------------------------------
-    # http_error_inject — Envoy HTTP fault filter (FIS未対応)
+    # http_error_inject — Envoy HTTP fault filter (変更なし)
     # ---------------------------------------------------------------------------
 
     def _patch_envoy_fault(self, namespace: str, service: str, numerator: int):
-        """対象サービスの Envoy egress ConfigMap の abort filter percentage を更新する"""
         configmap_name = _ENVOY_EGRESS_MAP[service]
         cm = self.core_v1.read_namespaced_config_map(name=configmap_name, namespace=namespace)
-        new_yaml = re.sub(
-            r"(numerator:\s*)\d+",
-            rf"\g<1>{numerator}",
-            cm.data["envoy.yaml"],
-            count=1,
+        cm.data["envoy.yaml"] = re.sub(
+            r"(numerator:\s*)\d+", rf"\g<1>{numerator}", cm.data["envoy.yaml"], count=1,
         )
-        cm.data["envoy.yaml"] = new_yaml
         self.core_v1.patch_namespaced_config_map(name=configmap_name, namespace=namespace, body=cm)
-        logger.info(f"envoy abort filter patched on {configmap_name}: numerator={numerator}")
-
-    def _patch_envoy_delay(self, namespace: str, service: str, latency_ms: int):
-        """対象サービスの Envoy egress ConfigMap の delay filter を更新する"""
-        configmap_name = _ENVOY_EGRESS_MAP[service]
-        cm = self.core_v1.read_namespaced_config_map(name=configmap_name, namespace=namespace)
-        yaml_str = cm.data["envoy.yaml"]
-        delay_s = f"{latency_ms / 1000:.3f}s"
-        yaml_str = re.sub(r"(fixed_delay:\s*)[\d.]+s", rf"\g<1>{delay_s}", yaml_str, count=1)
-        yaml_str = re.sub(
-            r"(fixed_delay:.*?numerator:\s*)\d+",
-            r"\g<1>100",
-            yaml_str,
-            count=1,
-            flags=re.DOTALL,
-        )
-        cm.data["envoy.yaml"] = yaml_str
-        self.core_v1.patch_namespaced_config_map(name=configmap_name, namespace=namespace, body=cm)
-        logger.info(f"envoy delay filter patched on {configmap_name}: {latency_ms}ms")
-
-    def _remove_envoy_delay(self, namespace: str, service: str):
-        """対象サービスの Envoy egress ConfigMap の delay filter を無効化する"""
-        configmap_name = _ENVOY_EGRESS_MAP[service]
-        cm = self.core_v1.read_namespaced_config_map(name=configmap_name, namespace=namespace)
-        yaml_str = cm.data["envoy.yaml"]
-        yaml_str = re.sub(r"(fixed_delay:\s*)[\d.]+s", r"\g<1>0s", yaml_str, count=1)
-        yaml_str = re.sub(
-            r"(fixed_delay:.*?numerator:\s*)\d+",
-            r"\g<1>0",
-            yaml_str,
-            count=1,
-            flags=re.DOTALL,
-        )
-        cm.data["envoy.yaml"] = yaml_str
-        self.core_v1.patch_namespaced_config_map(name=configmap_name, namespace=namespace, body=cm)
-        logger.info(f"envoy delay filter disabled on {configmap_name}")
 
     def _rollout_restart(self, namespace: str, service: str):
-        """Deployment を rolling restart して新 ConfigMap を反映する"""
         now = datetime.now(timezone.utc).isoformat()
         self.apps_v1.patch_namespaced_deployment(
-            name=service,
-            namespace=namespace,
+            name=service, namespace=namespace,
             body={"spec": {"template": {"metadata": {"annotations": {"kubectl.kubernetes.io/restartedAt": now}}}}},
         )
 
@@ -290,78 +325,72 @@ class ChaosAgent:
         numerator = int(experiment.fault_rate * 100)
         self._patch_envoy_fault(experiment.namespace, experiment.service, numerator)
         self._rollout_restart(experiment.namespace, experiment.service)
-        # Envoy ローリング再起動が完了するまで待機 (~30s, ADR 055)
         time.sleep(35)
-        logger.info(f"[{experiment.experiment_id}] Envoy abort filter active on {experiment.service}: {numerator}% errors")
+        logger.info(f"[{experiment.experiment_id}] Envoy abort {numerator}% on {experiment.service}")
 
     def http_error_remove(self, experiment: Experiment):
         self._patch_envoy_fault(experiment.namespace, experiment.service, 0)
         self._rollout_restart(experiment.namespace, experiment.service)
-        logger.info(f"[{experiment.experiment_id}] Envoy abort filter disabled on {experiment.service}")
 
-    def network_latency_inject(self, experiment: Experiment):
-        self._patch_envoy_delay(experiment.namespace, experiment.service, experiment.latency_ms)
-        self._rollout_restart(experiment.namespace, experiment.service)
-        time.sleep(35)
-        logger.info(f"[{experiment.experiment_id}] Envoy delay filter active on {experiment.service}: {experiment.latency_ms}ms")
-
-    def network_latency_remove(self, experiment: Experiment):
-        self._remove_envoy_delay(experiment.namespace, experiment.service)
-        self._rollout_restart(experiment.namespace, experiment.service)
-        logger.info(f"[{experiment.experiment_id}] Envoy delay filter disabled on {experiment.service}")
-
-    def _emergency_recover(self, experiment: Experiment):
-        """Envoy 系実験の緊急回復。network_latency は delay 除去のみ、http_error_inject は scale-to-0 後に fault 除去。"""
-        if experiment.fault_type == "network_latency":
-            try:
-                self.network_latency_remove(experiment)
-                logger.info(f"[{experiment.experiment_id}] emergency: delay filter disabled")
-            except Exception as e:
-                logger.error(f"[{experiment.experiment_id}] emergency_recover_latency failed: {e}")
-            return
-
-        namespace = experiment.namespace
-        service = experiment.service
+    def _emergency_recover_http(self, experiment: Experiment):
+        namespace, service = experiment.namespace, experiment.service
         original_replicas = 2
         try:
-            deployment = self._get_deployment(namespace, service)
-            original_replicas = deployment.spec.replicas or 2
-
+            dep = self.apps_v1.read_namespaced_deployment(name=service, namespace=namespace)
+            original_replicas = dep.spec.replicas or 2
             self.apps_v1.patch_namespaced_deployment_scale(
-                name=service, namespace=namespace,
-                body={"spec": {"replicas": 0}},
+                name=service, namespace=namespace, body={"spec": {"replicas": 0}},
             )
-            logger.info(f"[{experiment.experiment_id}] emergency: {service} scaled to 0 — sorry page active")
-
             self.http_error_remove(experiment)
-
-            logger.info(f"[{experiment.experiment_id}] emergency: holding scale=0 for 30s")
             time.sleep(30)
-
             self.apps_v1.patch_namespaced_deployment_scale(
-                name=service, namespace=namespace,
-                body={"spec": {"replicas": original_replicas}},
+                name=service, namespace=namespace, body={"spec": {"replicas": original_replicas}},
             )
-            logger.info(f"[{experiment.experiment_id}] emergency: {service} scaled back to {original_replicas} — recovering")
-
         except Exception as e:
-            logger.error(f"[{experiment.experiment_id}] emergency_recover failed: {e}")
+            logger.error(f"[{experiment.experiment_id}] emergency_recover_http failed: {e}")
             try:
                 self.apps_v1.patch_namespaced_deployment_scale(
-                    name=service, namespace=namespace,
-                    body={"spec": {"replicas": original_replicas}},
+                    name=service, namespace=namespace, body={"spec": {"replicas": original_replicas}},
                 )
             except Exception:
                 pass
 
     # ---------------------------------------------------------------------------
-    # run / stop
+    # FIS — node_failure 用（将来実装: EC2 ノード終了）
+    # ---------------------------------------------------------------------------
+
+    def _fis_start(self, template_id: str, experiment_id: str) -> str:
+        resp = self.fis.start_experiment(
+            experimentTemplateId=template_id,
+            tags={"experiment_id": experiment_id},
+        )
+        return resp["experiment"]["id"]
+
+    def _fis_wait_and_monitor(self, fis_exp_id: str, experiment: Experiment) -> str:
+        table = dynamodb.Table(experiment.experiment_table)
+        while True:
+            time.sleep(10)
+            resp  = self.fis.get_experiment(id=fis_exp_id)
+            state = resp["experiment"]["state"]["status"]
+            if state in _FIS_TERMINAL_STATES:
+                return state
+            item = table.get_item(Key={
+                "experiment_id": experiment.experiment_id,
+                "started_at": experiment.started_at,
+            }).get("Item", {})
+            if item.get("status") == "stopped":
+                try:
+                    self.fis.stop_experiment(id=fis_exp_id)
+                except Exception:
+                    pass
+                return "stopped"
+
+    # ---------------------------------------------------------------------------
+    # _interruptible_sleep: DynamoDB 停止フラグ監視付き待機
     # ---------------------------------------------------------------------------
 
     def _interruptible_sleep(self, experiment: Experiment, seconds: int, check_interval: int = 5) -> bool:
-        """http_error_inject の duration 監視。FIS 実験は _fis_wait_and_monitor を使う。
-        False を返した場合は呼び出し元が cleanup を行う。
-        """
+        """False を返した場合は外部停止。呼び出し元が cleanup する。"""
         table = dynamodb.Table(experiment.experiment_table)
         elapsed = 0
         _emergency_triggered = False
@@ -375,19 +404,24 @@ class ChaosAgent:
             }).get("Item", {})
 
             if item.get("status") == "stopped":
-                logger.info(f"[{experiment.experiment_id}] external stop detected")
                 return False
 
             if item.get("emergency_stop") and not _emergency_triggered:
                 _emergency_triggered = True
+                if experiment.fault_type in _CM_FAULT_TYPES:
+                    target = self._cm_emergency_stop
+                else:
+                    target = self._emergency_recover_http
                 threading.Thread(
-                    target=self._emergency_recover,
-                    args=(experiment,),
-                    daemon=True,
-                    name=f"emergency-{experiment.experiment_id[:8]}",
+                    target=target, args=(experiment,),
+                    daemon=True, name=f"emergency-{experiment.experiment_id[:8]}",
                 ).start()
 
         return True
+
+    # ---------------------------------------------------------------------------
+    # run / stop
+    # ---------------------------------------------------------------------------
 
     def run(self, experiment: Experiment):
         if not experiment.started_at:
@@ -395,59 +429,31 @@ class ChaosAgent:
         self._record_experiment(experiment, "running")
 
         try:
-            if experiment.fault_type in ("http_error_inject", "network_latency"):
-                for svc in ("service-a", "service-b", "service-c", "service-d"):
-                    try:
-                        self._set_experiment_id(experiment.namespace, svc, experiment.experiment_id)
-                    except Exception as e:
-                        logger.warning(f"[{experiment.experiment_id}] EXPERIMENT_ID patch failed on {svc}: {e}")
+            self._set_experiment_ids(experiment)
 
-                if experiment.fault_type == "http_error_inject":
-                    self.http_error_inject(experiment)
-                else:
-                    self.network_latency_inject(experiment)
+            if experiment.fault_type in _CM_FAULT_TYPES:
+                self._cm_run(experiment)
 
+            elif experiment.fault_type == "http_error_inject":
+                self.http_error_inject(experiment)
                 completed = self._interruptible_sleep(experiment, experiment.duration_seconds)
-
-                if experiment.fault_type == "http_error_inject":
-                    self.http_error_remove(experiment)
-                else:
-                    self.network_latency_remove(experiment)
-
-                for svc in ("service-a", "service-b", "service-c", "service-d"):
-                    try:
-                        self._clear_experiment_id(experiment.namespace, svc)
-                    except Exception as e:
-                        logger.warning(f"[{experiment.experiment_id}] EXPERIMENT_ID clear failed on {svc}: {e}")
-
+                self.http_error_remove(experiment)
                 if not completed:
+                    self._clear_experiment_ids(experiment)
                     return
 
-            elif experiment.fault_type in ("pod_kill", "cpu_stress", "memory_stress"):
-                # X-Ray アノテーション用に EXPERIMENT_ID を全サービスにセット
-                for svc in ("service-a", "service-b", "service-c", "service-d"):
-                    try:
-                        self._set_experiment_id(experiment.namespace, svc, experiment.experiment_id)
-                    except Exception as e:
-                        logger.warning(f"[{experiment.experiment_id}] EXPERIMENT_ID patch failed on {svc}: {e}")
-
-                template_id = self._get_fis_template_id(experiment)
-                fis_exp_id = self._fis_start_experiment(template_id, experiment.experiment_id)
+            elif experiment.fault_type == "node_failure":
+                template_id = os.environ.get("FIS_TEMPLATE_NODE_FAILURE", "")
+                if not template_id:
+                    raise RuntimeError("FIS_TEMPLATE_NODE_FAILURE is not set")
+                fis_exp_id = self._fis_start(template_id, experiment.experiment_id)
                 self._active_fis[experiment.experiment_id] = fis_exp_id
-                logger.info(f"[{experiment.experiment_id}] FIS experiment started: {fis_exp_id}")
-
                 result = self._fis_wait_and_monitor(fis_exp_id, experiment)
                 self._active_fis.pop(experiment.experiment_id, None)
-
-                for svc in ("service-a", "service-b", "service-c", "service-d"):
-                    try:
-                        self._clear_experiment_id(experiment.namespace, svc)
-                    except Exception as e:
-                        logger.warning(f"[{experiment.experiment_id}] EXPERIMENT_ID clear failed on {svc}: {e}")
-
                 if result == "failed":
                     raise RuntimeError(f"FIS experiment {fis_exp_id} failed")
                 if result == "stopped":
+                    self._clear_experiment_ids(experiment)
                     return
 
             else:
@@ -456,23 +462,22 @@ class ChaosAgent:
         except Exception as e:
             logger.error(f"[{experiment.experiment_id}] experiment failed: {e}")
             self._record_experiment(experiment, "failed", stop_reason=str(e))
+            self._clear_experiment_ids(experiment)
             raise
 
+        self._clear_experiment_ids(experiment)
         self._record_experiment(experiment, "completed")
         logger.info(f"[{experiment.experiment_id}] experiment completed")
 
     def stop(self, experiment: Experiment, reason: str = "manual"):
-        if experiment.fault_type == "http_error_inject":
+        if experiment.fault_type in _CM_FAULT_TYPES:
+            self._cm_emergency_stop(experiment)
+        elif experiment.fault_type == "http_error_inject":
             try:
                 self.http_error_remove(experiment)
             except Exception as e:
                 logger.warning(f"[{experiment.experiment_id}] http_error cleanup failed: {e}")
-        elif experiment.fault_type == "network_latency":
-            try:
-                self.network_latency_remove(experiment)
-            except Exception as e:
-                logger.warning(f"[{experiment.experiment_id}] network_latency cleanup failed: {e}")
-        else:
+        elif experiment.fault_type == "node_failure":
             fis_exp_id = self._active_fis.get(experiment.experiment_id)
             if fis_exp_id:
                 try:
@@ -509,13 +514,13 @@ def _item_to_experiment(item: dict) -> Experiment:
 
 class ChaosAgentPoller:
     def __init__(self, agent: ChaosAgent, table_name: str, poll_interval: int = 10):
-        self._agent = agent
-        self._table = dynamodb.Table(table_name)
+        self._agent         = agent
+        self._table         = dynamodb.Table(table_name)
         self._poll_interval = poll_interval
         self._running: dict[str, threading.Thread] = {}
 
     def _scan_pending(self) -> list[dict]:
-        items = []
+        items  = []
         kwargs: dict = {"FilterExpression": Attr("status").eq("pending")}
         while True:
             resp = self._table.scan(**kwargs)
@@ -526,13 +531,9 @@ class ChaosAgentPoller:
         return items
 
     def _claim(self, item: dict) -> bool:
-        """pending → running へ条件付き更新。競合時は False を返す。"""
         try:
             self._table.update_item(
-                Key={
-                    "experiment_id": item["experiment_id"],
-                    "started_at": item["started_at"],
-                },
+                Key={"experiment_id": item["experiment_id"], "started_at": item["started_at"]},
                 UpdateExpression="SET #st = :running",
                 ConditionExpression=Attr("status").eq("pending"),
                 ExpressionAttributeNames={"#st": "status"},
@@ -561,13 +562,10 @@ class ChaosAgentPoller:
                 continue
             if not self._claim(item):
                 continue
-
             experiment = _item_to_experiment(item)
             thread = threading.Thread(
-                target=self._run_experiment,
-                args=(experiment,),
-                daemon=True,
-                name=f"experiment-{eid[:8]}",
+                target=self._run_experiment, args=(experiment,),
+                daemon=True, name=f"experiment-{eid[:8]}",
             )
             self._running[eid] = thread
             thread.start()
@@ -586,7 +584,4 @@ class ChaosAgentPoller:
 if __name__ == "__main__":
     if not TABLE_NAME:
         raise RuntimeError("TABLE_NAME environment variable is required")
-
-    chaos_agent = ChaosAgent()
-    poller = ChaosAgentPoller(chaos_agent, TABLE_NAME, poll_interval=10)
-    poller.run_forever()
+    ChaosAgentPoller(ChaosAgent(), TABLE_NAME, poll_interval=10).run_forever()

@@ -28,6 +28,10 @@ rules:
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses"]
     verbs: ["get"]
+  # Chaos Mesh CRD 管理 (ADR 079)
+  - apiGroups: ["chaos-mesh.org"]
+    resources: ["podchaoses", "stresschaoses", "networkchaoses"]
+    verbs: ["create", "get", "delete", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -93,22 +97,9 @@ spec:
               value: chaos-platform-experiment-history
             - name: AWS_REGION
               value: ap-northeast-1
-            - name: FIS_TEMPLATE_SERVICE_A
-              value: PLACEHOLDER_FIS_TEMPLATE_SERVICE_A
-            - name: FIS_TEMPLATE_SERVICE_B
-              value: PLACEHOLDER_FIS_TEMPLATE_SERVICE_B
-            - name: FIS_TEMPLATE_POD_KILL_SERVICE_B
-              value: PLACEHOLDER_FIS_TEMPLATE_POD_KILL_SERVICE_B
-            - name: FIS_TEMPLATE_POD_KILL_SERVICE_C
-              value: PLACEHOLDER_FIS_TEMPLATE_POD_KILL_SERVICE_C
-            - name: FIS_TEMPLATE_CPU_STRESS_SERVICE_B
-              value: PLACEHOLDER_FIS_TEMPLATE_CPU_STRESS_SERVICE_B
-            - name: FIS_TEMPLATE_CPU_STRESS_SERVICE_C
-              value: PLACEHOLDER_FIS_TEMPLATE_CPU_STRESS_SERVICE_C
-            - name: FIS_TEMPLATE_MEMORY_STRESS_SERVICE_B
-              value: PLACEHOLDER_FIS_TEMPLATE_MEMORY_STRESS_SERVICE_B
-            - name: FIS_TEMPLATE_MEMORY_STRESS_SERVICE_C
-              value: PLACEHOLDER_FIS_TEMPLATE_MEMORY_STRESS_SERVICE_C
+            # node_failure 実験用 FIS テンプレート (ADR 079)
+            - name: FIS_TEMPLATE_NODE_FAILURE
+              value: PLACEHOLDER_FIS_TEMPLATE_NODE_FAILURE
           resources:
             requests:
               cpu: "64m"
