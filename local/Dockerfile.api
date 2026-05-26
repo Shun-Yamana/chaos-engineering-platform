@@ -1,9 +1,0 @@
-FROM python:3.13-slim
-
-RUN pip install --no-cache-dir fastapi uvicorn boto3
-
-COPY lambda/api_handler.py /lambda/api_handler.py
-COPY local/api_server.py /app/api_server.py
-
-WORKDIR /app
-CMD ["uvicorn", "api_server:app", "--host", "0.0.0.0", "--port", "8080"]
