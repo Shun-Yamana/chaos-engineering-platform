@@ -44,7 +44,7 @@ class XRayMiddleware(BaseHTTPMiddleware):
 xray_recorder.configure(
     context_missing="LOG_ERROR",
     context=AsyncContext(),
-    daemon_address="xray-service:2000",
+    daemon_address="cloudwatch-agent.amazon-cloudwatch:2000",
 )
 patch_all()
 
