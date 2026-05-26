@@ -18,6 +18,8 @@ build/
 .venv/
 venv/
 .env
+.env.production
+frontend/.env.production
 
 # AWS
 .aws/

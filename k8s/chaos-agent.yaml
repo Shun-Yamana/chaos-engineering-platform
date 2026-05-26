@@ -92,6 +92,12 @@ spec:
             initialDelaySeconds: 10
             periodSeconds: 30
             failureThreshold: 3
+          readinessProbe:
+            exec:
+              command: ["python", "-c", "import os; os.kill(1, 0)"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
           env:
             - name: TABLE_NAME
               value: chaos-platform-experiment-history

@@ -75,15 +75,3 @@ variable "cognito_test_user_password" {
   sensitive   = true
 }
 
-variable "grafana_url" {
-  description = "Grafana internal URL (e.g. http://grafana.monitoring.svc.cluster.local:3000) used by grafana_annotator Lambda."
-  type        = string
-  default     = ""
-}
-
-variable "grafana_token" {
-  description = "Grafana Service Account token for Annotation API. Store in CI secrets."
-  type        = string
-  sensitive   = true
-  default     = ""
-}
