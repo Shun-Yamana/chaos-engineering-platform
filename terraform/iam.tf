@@ -264,6 +264,29 @@ resource "aws_iam_policy" "fis_execution" {
           "${aws_s3_bucket.fis_reports.arn}/*",
         ]
       },
+      {
+        # SSM 経由 memory_stress 注入 (ADR 078)
+        Sid    = "SSMMemoryStress"
+        Effect = "Allow"
+        Action = [
+          "ssm:SendCommand",
+          "ssm:GetCommandInvocation",
+          "ssm:CancelCommand",
+          "ssm:ListCommandInvocations",
+        ]
+        Resource = [
+          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:document/${var.project_name}-memory-stress",
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*",
+          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*",
+        ]
+      },
+      {
+        # aws:ec2:instance ターゲット解決に必要
+        Sid      = "EC2DescribeInstances"
+        Effect   = "Allow"
+        Action   = ["ec2:DescribeInstances"]
+        Resource = "*"
+      },
     ]
   })
 

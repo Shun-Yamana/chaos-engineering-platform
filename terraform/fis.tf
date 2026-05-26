@@ -298,13 +298,58 @@ resource "aws_fis_experiment_template" "cpu_stress" {
 }
 
 # ---------------------------------------------------------------------------
-# FIS 実験テンプレート — memory_stress (ADR 054)
-# memoryPercentage=58 は ADR 047 の設計値 (150MB/256MB) を踏襲
+# SSM ドキュメント — memory_stress (ADR 078)
+# EC2 ノード上で service-b の cgroup に直接メモリストレスを注入する
+# ---------------------------------------------------------------------------
+
+resource "aws_ssm_document" "memory_stress" {
+  name          = "${var.project_name}-memory-stress"
+  document_type = "Command"
+
+  content = jsonencode({
+    schemaVersion = "2.2"
+    description   = "Inject memory stress into a Kubernetes service container cgroup (ADR 078)"
+    parameters = {
+      ServiceName = {
+        type        = "String"
+        default     = "service-b"
+        description = "Target Kubernetes service (pod label app=<ServiceName>)"
+      }
+    }
+    mainSteps = [{
+      action = "aws:runShellScript"
+      name   = "memoryStress"
+      inputs = {
+        timeoutSeconds = "360"
+        runCommand = [
+          "#!/bin/bash",
+          "set -euo pipefail",
+          "SERVICE='{{ ServiceName }}'",
+          "CONTAINER_ID=$(crictl ps --name \"$SERVICE\" -q 2>/dev/null | head -1)",
+          "if [ -z \"$CONTAINER_ID\" ]; then echo \"$SERVICE not on this node, skipping\"; exit 0; fi",
+          "PID=$(crictl inspect \"$CONTAINER_ID\" | jq -r '.info.pid')",
+          "CGROUP=$(grep '^[0-9]*:memory:' /proc/$PID/cgroup | cut -d: -f3)",
+          "echo \"Injecting into /sys/fs/cgroup/memory$CGROUP\"",
+          "printf 'import time\\ndata = []\\nwhile True:\\n    data.append(bytearray(1024*1024))\\n    time.sleep(0.05)\\n' > /tmp/memstress.py",
+          "echo $$ > /sys/fs/cgroup/memory$${CGROUP}/cgroup.procs",
+          "exec python3 /tmp/memstress.py",
+        ]
+      }
+    }]
+  })
+
+  tags = local.common_tags
+}
+
+# ---------------------------------------------------------------------------
+# FIS 実験テンプレート — memory_stress (ADR 078)
+# aws:eks:pod-memory-stress は cgroup 分離により service-b に届かないため
+# aws:ssm:send-command で EC2 ノードから直接 cgroup に注入する
 # ---------------------------------------------------------------------------
 
 resource "aws_fis_experiment_template" "memory_stress" {
   for_each    = local.fis_fault_services
-  description = "Memory stress injection for ${each.key} (aws:eks:pod-memory-stress)"
+  description = "Memory stress injection for ${each.key} via SSM cgroup injection (ADR 078)"
   role_arn    = aws_iam_role.fis_execution.arn
 
   stop_condition {
@@ -313,25 +358,28 @@ resource "aws_fis_experiment_template" "memory_stress" {
   }
 
   target {
-    name           = "pods"
-    resource_type  = "aws:eks:pod"
+    name           = "nodes"
+    resource_type  = "aws:ec2:instance"
     selection_mode = "ALL"
 
-    parameters = {
-      clusterIdentifier = module.eks.cluster_name
-      namespace         = "default"
-      selectorType      = "labelSelector"
-      selectorValue     = "app=${each.key}"
+    resource_tag {
+      key   = "eks:cluster-name"
+      value = module.eks.cluster_name
     }
   }
 
   action {
-    name      = "inject-memory-stress"
-    action_id = "aws:eks:pod-memory-stress"
+    name      = "inject-memory-stress-via-ssm"
+    action_id = "aws:ssm:send-command"
 
     parameter {
-      key   = "percent"
-      value = "95"
+      key   = "documentArn"
+      value = aws_ssm_document.memory_stress.arn
+    }
+
+    parameter {
+      key   = "documentParameters"
+      value = jsonencode({ ServiceName = each.key })
     }
 
     parameter {
@@ -339,14 +387,9 @@ resource "aws_fis_experiment_template" "memory_stress" {
       value = "PT300S"
     }
 
-    parameter {
-      key   = "kubernetesServiceAccount"
-      value = "default"
-    }
-
     target {
-      key   = "Pods"
-      value = "pods"
+      key   = "Instances"
+      value = "nodes"
     }
   }
 
