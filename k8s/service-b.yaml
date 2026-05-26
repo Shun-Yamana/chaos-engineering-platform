@@ -40,17 +40,6 @@ spec:
             name: envoy-service-c-egress
         - name: envoy-tmp
           emptyDir: {}
-      initContainers:
-        - name: tc-qdisc-setup
-          image: 203553641035.dkr.ecr.ap-northeast-1.amazonaws.com/chaos-platform/tc-init:latest
-          command: ["tc", "qdisc", "replace", "dev", "eth0", "root", "pfifo_fast"]
-          securityContext:
-            runAsUser: 0
-            runAsNonRoot: false
-            allowPrivilegeEscalation: false
-            capabilities:
-              add: ["NET_ADMIN"]
-              drop: ["ALL"]
       containers:
         - name: service-b
           image: SERVICE_B_IMAGE
