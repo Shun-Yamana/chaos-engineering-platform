@@ -18,6 +18,8 @@ spec:
     metadata:
       labels:
         app: service-c
+      annotations:
+        instrumentation.opentelemetry.io/inject-python: "false"
     spec:
       automountServiceAccountToken: false
       securityContext:
