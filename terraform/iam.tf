@@ -196,35 +196,11 @@ resource "aws_iam_role" "fis_execution" {
 
 resource "aws_iam_policy" "fis_execution" {
   name        = "fis-execution-policy"
-  description = "Least-privilege policy for FIS to inject network latency (docs/iam-design.md §3)"
+  description = "Least-privilege policy for FIS node_failure experiment (ADR 079, ADR 080)"
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
-      {
-        Sid      = "EKSDescribe"
-        Effect   = "Allow"
-        Action   = ["eks:DescribeCluster"]
-        Resource = "arn:aws:eks:${var.aws_region}:${data.aws_caller_identity.current.account_id}:cluster/${module.eks.cluster_name}"
-      },
-      {
-        # AWS 仕様でリソース指定不可
-        Sid      = "EC2Describe"
-        Effect   = "Allow"
-        Action   = ["ec2:DescribeNetworkInterfaces"]
-        Resource = "*"
-      },
-      {
-        Sid      = "EC2Modify"
-        Effect   = "Allow"
-        Action   = ["ec2:ModifyNetworkInterfaceAttribute"]
-        Resource = "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:network-interface/*"
-        Condition = {
-          StringEquals = {
-            "aws:ResourceTag/aws:eks:cluster-name" = module.eks.cluster_name
-          }
-        }
-      },
       {
         # log_configuration 用: アカウントレベルの Delivery API はリソース指定不可
         Sid    = "CloudWatchLogsDelivery"
@@ -265,24 +241,20 @@ resource "aws_iam_policy" "fis_execution" {
         ]
       },
       {
-        # SSM 経由 memory_stress 注入 (ADR 078)
-        Sid    = "SSMMemoryStress"
-        Effect = "Allow"
-        Action = [
-          "ssm:SendCommand",
-          "ssm:GetCommandInvocation",
-          "ssm:CancelCommand",
-          "ssm:ListCommandInvocations",
-        ]
-        Resource = [
-          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:document/${var.project_name}-memory-stress",
-          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*",
-          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*",
-        ]
+        # node_failure: ターゲット解決・実験実行 (ADR 080)
+        Sid      = "EC2NodeFailure"
+        Effect   = "Allow"
+        Action   = ["ec2:DescribeInstances", "ec2:TerminateInstances"]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "aws:ResourceTag/eks:cluster-name" = module.eks.cluster_name
+          }
+        }
       },
       {
-        # aws:ec2:instance ターゲット解決に必要
-        Sid      = "EC2DescribeInstances"
+        # DescribeInstances はリソース指定不可
+        Sid      = "EC2Describe"
         Effect   = "Allow"
         Action   = ["ec2:DescribeInstances"]
         Resource = "*"
