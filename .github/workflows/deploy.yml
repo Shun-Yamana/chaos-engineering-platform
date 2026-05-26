@@ -1,6 +1,7 @@
 name: Deploy Services
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
@@ -146,7 +147,12 @@ jobs:
   deploy-frontend:
     name: Deploy Frontend
     runs-on: ubuntu-latest
-    if: contains(github.event.head_commit.modified, 'frontend/') || contains(github.event.head_commit.added, 'frontend/')
+    # contains() on an array does exact-match only; toJSON() converts to string for substring match.
+    # workflow_dispatch always deploys frontend (useful for initial setup).
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      contains(toJSON(github.event.head_commit.modified), 'frontend/') ||
+      contains(toJSON(github.event.head_commit.added), 'frontend/')
 
     steps:
       - uses: actions/checkout@v4

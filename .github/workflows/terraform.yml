@@ -1,6 +1,7 @@
 name: Terraform
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
@@ -59,9 +60,8 @@ jobs:
         run: |
           terraform plan \
             -var="slack_webhook_url=${{ secrets.SLACK_WEBHOOK_URL }}" \
-            -var="github_repo=${{ secrets.GITHUB_REPO }}" \
-            -var="alb_arn_suffix=${{ secrets.ALB_ARN_SUFFIX }}" \
-            -var="alb_dns_name=${{ secrets.ALB_DNS_NAME }}" \
+            -var="github_repo=${{ secrets.REPO_NAME }}" \
+            -var="cognito_test_user_password=${{ secrets.COGNITO_TEST_USER_PASSWORD }}" \
             -out=tfplan \
             -no-color 2>&1 | tee plan_output.txt
         continue-on-error: true

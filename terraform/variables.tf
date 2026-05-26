@@ -58,9 +58,10 @@ variable "github_repo" {
 }
 
 variable "slack_webhook_url" {
-  description = "Slack incoming webhook URL for chaos alerts"
+  description = "Slack incoming webhook URL for chaos alerts (optional)"
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "frontend_url" {
