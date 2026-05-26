@@ -11,7 +11,33 @@ from fastapi import FastAPI, HTTPException, Request
 
 from aws_xray_sdk.core import xray_recorder, patch_all
 from aws_xray_sdk.core.async_context import AsyncContext
-from aws_xray_sdk.ext.fastapi import XRayMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request as StarletteRequest
+
+class XRayMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app, recorder=None):
+        super().__init__(app)
+        self._recorder = recorder or xray_recorder
+
+    async def dispatch(self, request: StarletteRequest, call_next):
+        name = request.url.path or "/"
+        try:
+            self._recorder.begin_segment(name)
+        except Exception:
+            return await call_next(request)
+        try:
+            response = await call_next(request)
+        except Exception:
+            try:
+                self._recorder.end_segment()
+            except Exception:
+                pass
+            raise
+        try:
+            self._recorder.end_segment()
+        except Exception:
+            pass
+        return response
 
 xray_recorder.configure(
     context_missing="LOG_ERROR",
