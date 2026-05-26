@@ -37,3 +37,13 @@ secrets/
 
 # Terraform 生成ファイル
 k8s/ingress.yaml
+terraform/tfplan
+terraform/*.plan
+
+# Lambda ビルド成果物
+lambda/*.zip
+
+# ログ・一時ファイル
+*.log
+*.dtmp
+results/

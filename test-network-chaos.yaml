@@ -1,0 +1,19 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: test-network-latency
+  namespace: test
+spec:
+  action: delay
+  mode: one
+  selector:
+    namespaces:
+      - test
+    labelSelectors:
+      app: nginx-target
+  delay:
+    latency: 500ms
+    correlation: "0"
+    jitter: 0ms
+  direction: to
+  duration: 40s

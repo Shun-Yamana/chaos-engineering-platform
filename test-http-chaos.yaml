@@ -1,0 +1,17 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: HTTPChaos
+metadata:
+  name: test-http-error
+  namespace: test
+spec:
+  mode: all
+  selector:
+    namespaces:
+      - test
+    labelSelectors:
+      app: nginx-target
+  target: Response
+  port: 80
+  path: "*"
+  abort: true
+  duration: 30s
