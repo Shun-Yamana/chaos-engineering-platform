@@ -53,7 +53,7 @@ spec:
               drop: ["ALL"]
       containers:
         - name: service-b
-          image: 203553641035.dkr.ecr.ap-northeast-1.amazonaws.com/chaos-platform/service-b:72737b0c4f51dfd347cad13189ebf753643f1504
+          image: SERVICE_B_IMAGE
           ports:
             - containerPort: 8000
           env:

@@ -34,7 +34,7 @@ spec:
               app: service-c
       containers:
         - name: service-c
-          image: 203553641035.dkr.ecr.ap-northeast-1.amazonaws.com/chaos-platform/service-c:latest
+          image: SERVICE_C_IMAGE
           ports:
             - containerPort: 8000
           lifecycle:

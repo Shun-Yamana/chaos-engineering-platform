@@ -63,6 +63,8 @@ resource "aws_iam_policy" "github_actions" {
         Resource = [
           aws_ecr_repository.service_a.arn,
           aws_ecr_repository.service_b.arn,
+          aws_ecr_repository.service_c.arn,
+          aws_ecr_repository.service_d.arn,
           aws_ecr_repository.chaos_agent.arn,
         ]
       },

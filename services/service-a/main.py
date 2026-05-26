@@ -15,7 +15,11 @@ from aws_xray_sdk.core import xray_recorder, patch_all
 from aws_xray_sdk.core.async_context import AsyncContext
 from aws_xray_sdk.ext.fastapi import XRayMiddleware
 
-xray_recorder.configure(context_missing="LOG_ERROR", context=AsyncContext())
+xray_recorder.configure(
+    context_missing="LOG_ERROR",
+    context=AsyncContext(),
+    daemon_address="xray-service:2000",
+)
 patch_all()
 
 

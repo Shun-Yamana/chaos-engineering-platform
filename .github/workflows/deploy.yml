@@ -30,6 +30,10 @@ jobs:
             context: ./services/service-a
           - service: service-b
             context: ./services/service-b
+          - service: service-c
+            context: ./services/service-c
+          - service: service-d
+            context: ./services/service-d
           - service: chaos-agent
             context: ./chaos
 
@@ -99,6 +103,20 @@ jobs:
           sed "s|SERVICE_B_IMAGE|$IMAGE|g" k8s/service-b.yaml | kubectl apply -f -
           kubectl rollout status deployment/service-b -n default --timeout=300s
 
+      - name: Deploy service-c
+        run: |
+          ECR=${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+          IMAGE=$ECR/chaos-platform/service-c:${{ github.sha }}
+          sed "s|SERVICE_C_IMAGE|$IMAGE|g" k8s/service-c.yaml | kubectl apply -f -
+          kubectl rollout status deployment/service-c -n default --timeout=300s
+
+      - name: Deploy service-d
+        run: |
+          ECR=${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+          IMAGE=$ECR/chaos-platform/service-d:${{ github.sha }}
+          sed "s|SERVICE_D_IMAGE|$IMAGE|g" k8s/service-d.yaml | kubectl apply -f -
+          kubectl rollout status deployment/service-d -n default --timeout=300s
+
       - name: Apply HPA and PDB
         run: |
           kubectl apply -f k8s/hpa.yaml
@@ -108,29 +126,15 @@ jobs:
         env:
           ECR: ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
           CHAOS_AGENT_ROLE_ARN: ${{ secrets.CHAOS_AGENT_ROLE_ARN }}
-          PLACEHOLDER_FIS_TEMPLATE_SERVICE_A: ${{ secrets.FIS_TEMPLATE_SERVICE_A }}
-          PLACEHOLDER_FIS_TEMPLATE_SERVICE_B: ${{ secrets.FIS_TEMPLATE_SERVICE_B }}
-          PLACEHOLDER_FIS_TEMPLATE_POD_KILL_SERVICE_B: ${{ secrets.FIS_TEMPLATE_POD_KILL_SERVICE_B }}
-          PLACEHOLDER_FIS_TEMPLATE_POD_KILL_SERVICE_C: ${{ secrets.FIS_TEMPLATE_POD_KILL_SERVICE_C }}
-          PLACEHOLDER_FIS_TEMPLATE_CPU_STRESS_SERVICE_B: ${{ secrets.FIS_TEMPLATE_CPU_STRESS_SERVICE_B }}
-          PLACEHOLDER_FIS_TEMPLATE_CPU_STRESS_SERVICE_C: ${{ secrets.FIS_TEMPLATE_CPU_STRESS_SERVICE_C }}
-          PLACEHOLDER_FIS_TEMPLATE_MEMORY_STRESS_SERVICE_B: ${{ secrets.FIS_TEMPLATE_MEMORY_STRESS_SERVICE_B }}
-          PLACEHOLDER_FIS_TEMPLATE_MEMORY_STRESS_SERVICE_C: ${{ secrets.FIS_TEMPLATE_MEMORY_STRESS_SERVICE_C }}
-          PLACEHOLDER_TABLE_NAME: ${{ secrets.EXPERIMENT_TABLE_NAME }}
+          PLACEHOLDER_FIS_TEMPLATE_NODE_FAILURE: ${{ secrets.FIS_TEMPLATE_NODE_FAILURE }}
+          PLACEHOLDER_FIS_TEMPLATE_AZ_ISOLATION: ${{ secrets.FIS_TEMPLATE_AZ_ISOLATION }}
         run: |
           CHAOS_AGENT_IMAGE=$ECR/chaos-platform/chaos-agent:${{ github.sha }}
           sed \
             -e "s|CHAOS_AGENT_ROLE_ARN|$CHAOS_AGENT_ROLE_ARN|g" \
             -e "s|CHAOS_AGENT_IMAGE|$CHAOS_AGENT_IMAGE|g" \
-            -e "s|PLACEHOLDER_FIS_TEMPLATE_SERVICE_A|$PLACEHOLDER_FIS_TEMPLATE_SERVICE_A|g" \
-            -e "s|PLACEHOLDER_FIS_TEMPLATE_SERVICE_B|$PLACEHOLDER_FIS_TEMPLATE_SERVICE_B|g" \
-            -e "s|PLACEHOLDER_FIS_TEMPLATE_POD_KILL_SERVICE_B|$PLACEHOLDER_FIS_TEMPLATE_POD_KILL_SERVICE_B|g" \
-            -e "s|PLACEHOLDER_FIS_TEMPLATE_POD_KILL_SERVICE_C|$PLACEHOLDER_FIS_TEMPLATE_POD_KILL_SERVICE_C|g" \
-            -e "s|PLACEHOLDER_FIS_TEMPLATE_CPU_STRESS_SERVICE_B|$PLACEHOLDER_FIS_TEMPLATE_CPU_STRESS_SERVICE_B|g" \
-            -e "s|PLACEHOLDER_FIS_TEMPLATE_CPU_STRESS_SERVICE_C|$PLACEHOLDER_FIS_TEMPLATE_CPU_STRESS_SERVICE_C|g" \
-            -e "s|PLACEHOLDER_FIS_TEMPLATE_MEMORY_STRESS_SERVICE_B|$PLACEHOLDER_FIS_TEMPLATE_MEMORY_STRESS_SERVICE_B|g" \
-            -e "s|PLACEHOLDER_FIS_TEMPLATE_MEMORY_STRESS_SERVICE_C|$PLACEHOLDER_FIS_TEMPLATE_MEMORY_STRESS_SERVICE_C|g" \
-            -e "s|PLACEHOLDER_TABLE_NAME|$PLACEHOLDER_TABLE_NAME|g" \
+            -e "s|PLACEHOLDER_FIS_TEMPLATE_NODE_FAILURE|$PLACEHOLDER_FIS_TEMPLATE_NODE_FAILURE|g" \
+            -e "s|PLACEHOLDER_FIS_TEMPLATE_AZ_ISOLATION|$PLACEHOLDER_FIS_TEMPLATE_AZ_ISOLATION|g" \
             k8s/chaos-agent.yaml | kubectl apply -f -
           kubectl rollout status deployment/chaos-agent -n chaos --timeout=300s
 
