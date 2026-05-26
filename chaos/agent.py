@@ -1,5 +1,4 @@
 import os
-import re
 import time
 import logging
 import threading
@@ -33,18 +32,20 @@ _CM_VERSION = "v1alpha1"
 
 # fault_type → Chaos Mesh CRD plural name
 _CM_PLURAL = {
-    "pod_kill":        "podchaoses",
-    "cpu_stress":      "stresschaoses",
-    "memory_stress":   "stresschaoses",
-    "network_latency": "networkchaoses",
+    "pod_kill":         "podchaoses",
+    "cpu_stress":       "stresschaoses",
+    "memory_stress":    "stresschaoses",
+    "network_latency":  "networkchaoses",
+    "http_error_inject": "httpchaoses",
 }
 
 _CM_FAULT_TYPES = frozenset(_CM_PLURAL.keys())
 
-# Envoy egress ConfigMap マッピング (http_error_inject)
-_ENVOY_EGRESS_MAP = {
-    "service-a": "envoy-service-b-egress",
-    "service-b": "envoy-service-c-egress",
+# http_error_inject: experiment.service（上流）→ HTTPChaos ターゲット（下流）
+# service-a の防衛を試す → service-b の Response を abort
+_HTTP_CHAOS_TARGET = {
+    "service-a": "service-b",
+    "service-b": "service-c",
 }
 
 _FIS_TERMINAL_STATES = {"completed", "stopped", "failed"}
@@ -219,6 +220,16 @@ class ChaosAgent:
             base["spec"]["direction"] = "to"
             base["spec"]["duration"] = f"{experiment.duration_seconds}s"
 
+        elif experiment.fault_type == "http_error_inject":
+            target_svc = _HTTP_CHAOS_TARGET.get(experiment.service, experiment.service)
+            base["kind"] = "HTTPChaos"
+            base["spec"]["selector"]["labelSelectors"]["app"] = target_svc
+            base["spec"]["target"] = "Response"
+            base["spec"]["port"] = 8000
+            base["spec"]["path"] = "*"
+            base["spec"]["abort"] = True
+            base["spec"]["duration"] = f"{experiment.duration_seconds}s"
+
         return plural, base
 
     def _cm_apply(self, plural: str, manifest: dict, namespace: str):
@@ -303,59 +314,6 @@ class ChaosAgent:
             logger.error(f"[{experiment.experiment_id}] emergency_cm_delete failed: {e}")
 
     # ---------------------------------------------------------------------------
-    # http_error_inject — Envoy HTTP fault filter (変更なし)
-    # ---------------------------------------------------------------------------
-
-    def _patch_envoy_fault(self, namespace: str, service: str, numerator: int):
-        configmap_name = _ENVOY_EGRESS_MAP[service]
-        cm = self.core_v1.read_namespaced_config_map(name=configmap_name, namespace=namespace)
-        cm.data["envoy.yaml"] = re.sub(
-            r"(numerator:\s*)\d+", rf"\g<1>{numerator}", cm.data["envoy.yaml"], count=1,
-        )
-        self.core_v1.patch_namespaced_config_map(name=configmap_name, namespace=namespace, body=cm)
-
-    def _rollout_restart(self, namespace: str, service: str):
-        now = datetime.now(timezone.utc).isoformat()
-        self.apps_v1.patch_namespaced_deployment(
-            name=service, namespace=namespace,
-            body={"spec": {"template": {"metadata": {"annotations": {"kubectl.kubernetes.io/restartedAt": now}}}}},
-        )
-
-    def http_error_inject(self, experiment: Experiment):
-        numerator = int(experiment.fault_rate * 100)
-        self._patch_envoy_fault(experiment.namespace, experiment.service, numerator)
-        self._rollout_restart(experiment.namespace, experiment.service)
-        time.sleep(35)
-        logger.info(f"[{experiment.experiment_id}] Envoy abort {numerator}% on {experiment.service}")
-
-    def http_error_remove(self, experiment: Experiment):
-        self._patch_envoy_fault(experiment.namespace, experiment.service, 0)
-        self._rollout_restart(experiment.namespace, experiment.service)
-
-    def _emergency_recover_http(self, experiment: Experiment):
-        namespace, service = experiment.namespace, experiment.service
-        original_replicas = 2
-        try:
-            dep = self.apps_v1.read_namespaced_deployment(name=service, namespace=namespace)
-            original_replicas = dep.spec.replicas or 2
-            self.apps_v1.patch_namespaced_deployment_scale(
-                name=service, namespace=namespace, body={"spec": {"replicas": 0}},
-            )
-            self.http_error_remove(experiment)
-            time.sleep(30)
-            self.apps_v1.patch_namespaced_deployment_scale(
-                name=service, namespace=namespace, body={"spec": {"replicas": original_replicas}},
-            )
-        except Exception as e:
-            logger.error(f"[{experiment.experiment_id}] emergency_recover_http failed: {e}")
-            try:
-                self.apps_v1.patch_namespaced_deployment_scale(
-                    name=service, namespace=namespace, body={"spec": {"replicas": original_replicas}},
-                )
-            except Exception:
-                pass
-
-    # ---------------------------------------------------------------------------
     # FIS — node_failure 用（将来実装: EC2 ノード終了）
     # ---------------------------------------------------------------------------
 
@@ -408,12 +366,8 @@ class ChaosAgent:
 
             if item.get("emergency_stop") and not _emergency_triggered:
                 _emergency_triggered = True
-                if experiment.fault_type in _CM_FAULT_TYPES:
-                    target = self._cm_emergency_stop
-                else:
-                    target = self._emergency_recover_http
                 threading.Thread(
-                    target=target, args=(experiment,),
+                    target=self._cm_emergency_stop, args=(experiment,),
                     daemon=True, name=f"emergency-{experiment.experiment_id[:8]}",
                 ).start()
 
@@ -433,14 +387,6 @@ class ChaosAgent:
 
             if experiment.fault_type in _CM_FAULT_TYPES:
                 self._cm_run(experiment)
-
-            elif experiment.fault_type == "http_error_inject":
-                self.http_error_inject(experiment)
-                completed = self._interruptible_sleep(experiment, experiment.duration_seconds)
-                self.http_error_remove(experiment)
-                if not completed:
-                    self._clear_experiment_ids(experiment)
-                    return
 
             elif experiment.fault_type == "node_failure":
                 template_id = os.environ.get("FIS_TEMPLATE_NODE_FAILURE", "")
@@ -472,11 +418,6 @@ class ChaosAgent:
     def stop(self, experiment: Experiment, reason: str = "manual"):
         if experiment.fault_type in _CM_FAULT_TYPES:
             self._cm_emergency_stop(experiment)
-        elif experiment.fault_type == "http_error_inject":
-            try:
-                self.http_error_remove(experiment)
-            except Exception as e:
-                logger.warning(f"[{experiment.experiment_id}] http_error cleanup failed: {e}")
         elif experiment.fault_type == "node_failure":
             fis_exp_id = self._active_fis.get(experiment.experiment_id)
             if fis_exp_id:
