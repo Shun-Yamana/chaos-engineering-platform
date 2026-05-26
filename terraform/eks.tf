@@ -9,6 +9,9 @@ module "eks" {
   public_access_cidrs = var.eks_public_access_cidrs
 
   tags = local.common_tags
+
+  # ロググループを先に作成することで EKS の自動生成との競合を防ぐ
+  depends_on = [aws_cloudwatch_log_group.eks_control_plane]
 }
 
 # ---------------------------------------------------------------------------
