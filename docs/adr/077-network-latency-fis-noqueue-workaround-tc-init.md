@@ -1,6 +1,6 @@
 # ADR 077 - network_latency FIS 再挑戦：tc-init init container で noqueue 制約を回避
 
-- Status: Accepted
+- Status: Superseded by ADR 079
 - Date: 2026-05-26
 
 ## Context

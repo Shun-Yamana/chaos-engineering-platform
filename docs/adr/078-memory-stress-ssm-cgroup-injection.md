@@ -1,6 +1,6 @@
 # ADR 078 - memory_stress SKIP 解消：SSM 経由でノード上から service-b の cgroup にメモリストレスを注入
 
-- Status: Accepted
+- Status: Superseded by ADR 079
 - Date: 2026-05-26
 
 ## Context
