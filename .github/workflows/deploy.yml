@@ -126,15 +126,20 @@ jobs:
         env:
           ECR: ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
           CHAOS_AGENT_ROLE_ARN: ${{ secrets.CHAOS_AGENT_ROLE_ARN }}
-          PLACEHOLDER_FIS_TEMPLATE_NODE_FAILURE: ${{ secrets.FIS_TEMPLATE_NODE_FAILURE }}
-          PLACEHOLDER_FIS_TEMPLATE_AZ_ISOLATION: ${{ secrets.FIS_TEMPLATE_AZ_ISOLATION }}
         run: |
+          PROJECT=chaos-platform
+          FIS_NODE_FAILURE=$(aws ssm get-parameter \
+            --name "/$PROJECT/fis/node-failure-template-id" \
+            --query "Parameter.Value" --output text)
+          FIS_AZ_ISOLATION=$(aws ssm get-parameter \
+            --name "/$PROJECT/fis/az-isolation-template-id" \
+            --query "Parameter.Value" --output text)
           CHAOS_AGENT_IMAGE=$ECR/chaos-platform/chaos-agent:${{ github.sha }}
           sed \
             -e "s|CHAOS_AGENT_ROLE_ARN|$CHAOS_AGENT_ROLE_ARN|g" \
             -e "s|CHAOS_AGENT_IMAGE|$CHAOS_AGENT_IMAGE|g" \
-            -e "s|PLACEHOLDER_FIS_TEMPLATE_NODE_FAILURE|$PLACEHOLDER_FIS_TEMPLATE_NODE_FAILURE|g" \
-            -e "s|PLACEHOLDER_FIS_TEMPLATE_AZ_ISOLATION|$PLACEHOLDER_FIS_TEMPLATE_AZ_ISOLATION|g" \
+            -e "s|PLACEHOLDER_FIS_TEMPLATE_NODE_FAILURE|$FIS_NODE_FAILURE|g" \
+            -e "s|PLACEHOLDER_FIS_TEMPLATE_AZ_ISOLATION|$FIS_AZ_ISOLATION|g" \
             k8s/chaos-agent.yaml | kubectl apply -f -
           kubectl rollout status deployment/chaos-agent -n chaos --timeout=300s
 

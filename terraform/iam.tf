@@ -93,6 +93,15 @@ resource "aws_iam_policy" "github_actions" {
         Action   = ["cloudfront:CreateInvalidation"]
         Resource = aws_cloudfront_distribution.frontend.arn
       },
+      {
+        # deploy.yml が FIS テンプレート ID を動的取得 (GitHub Secrets 不要)
+        Sid    = "FISTemplateSSMRead"
+        Effect = "Allow"
+        Action = ["ssm:GetParameter"]
+        Resource = [
+          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/fis/*",
+        ]
+      },
     ]
   })
 

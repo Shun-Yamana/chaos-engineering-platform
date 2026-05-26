@@ -107,6 +107,13 @@ output "fis_template_node_failure_id" {
   value       = aws_fis_experiment_template.node_failure.id
 }
 
+resource "aws_ssm_parameter" "fis_template_node_failure" {
+  name  = "/${var.project_name}/fis/node-failure-template-id"
+  type  = "String"
+  value = aws_fis_experiment_template.node_failure.id
+  tags  = local.common_tags
+}
+
 # ---------------------------------------------------------------------------
 # FIS 実験テンプレート — az_isolation (ADR 083)
 # ap-northeast-1a のプライベートサブネットを aws:network:disrupt-connectivity で2分間遮断
@@ -189,4 +196,11 @@ resource "aws_fis_experiment_template" "az_isolation" {
 output "fis_template_az_isolation_id" {
   description = "FIS experiment template ID for az_isolation (subnet network disruption)"
   value       = aws_fis_experiment_template.az_isolation.id
+}
+
+resource "aws_ssm_parameter" "fis_template_az_isolation" {
+  name  = "/${var.project_name}/fis/az-isolation-template-id"
+  type  = "String"
+  value = aws_fis_experiment_template.az_isolation.id
+  tags  = local.common_tags
 }
