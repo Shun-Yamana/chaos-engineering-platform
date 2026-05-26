@@ -14,6 +14,8 @@ const FAULT_COLORS: Record<string, string> = {
   memory_stress:     "bg-purple-100 text-purple-700",
   http_error_inject: "bg-yellow-100 text-yellow-800",
   network_latency:   "bg-blue-100 text-blue-700",
+  node_failure:      "bg-stone-100 text-stone-700",
+  az_isolation:      "bg-cyan-100 text-cyan-800",
 }
 
 const FAULT_LABELS: Record<string, string> = {
@@ -22,6 +24,8 @@ const FAULT_LABELS: Record<string, string> = {
   memory_stress:     "Memory Stress",
   http_error_inject: "HTTP Error",
   network_latency:   "Network Latency",
+  node_failure:      "Node Failure",
+  az_isolation:      "AZ Isolation",
 }
 
 function fmt(iso: string) {

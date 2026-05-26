@@ -9,20 +9,28 @@ interface Props {
 const SERVICES = ["service-b"]
 
 const FAULT_META: Record<string, { label: string; desc: string; icon: string; accent: string; border: string }> = {
-  pod_kill:          { label: "Pod Kill",      desc: "Force-terminates a running pod",      icon: "✂",  accent: "text-red-600",    border: "border-red-300 bg-red-50"    },
-  cpu_stress:        { label: "CPU Stress",    desc: "Saturates CPU in the container",      icon: "⚡", accent: "text-orange-600", border: "border-orange-300 bg-orange-50" },
-  memory_stress:     { label: "Memory Stress", desc: "Exhausts available pod memory",       icon: "▣",  accent: "text-purple-600", border: "border-purple-300 bg-purple-50" },
-  http_error_inject: { label: "HTTP Error",    desc: "Returns 5xx at configurable rate",    icon: "⚠",  accent: "text-yellow-600", border: "border-yellow-300 bg-yellow-50" },
-  network_latency:   { label: "Net Latency",   desc: "Injects delay via env var patch",     icon: "⏱", accent: "text-blue-600",   border: "border-blue-300 bg-blue-50"   },
+  // K8s Layer — Chaos Mesh
+  pod_kill:          { label: "Pod Kill",      desc: "Force-terminates a running pod",              icon: "✂",  accent: "text-red-600",    border: "border-red-300 bg-red-50"      },
+  cpu_stress:        { label: "CPU Stress",    desc: "Saturates CPU in the container",              icon: "⚡", accent: "text-orange-600", border: "border-orange-300 bg-orange-50" },
+  memory_stress:     { label: "Memory Stress", desc: "Exhausts available pod memory",               icon: "▣",  accent: "text-purple-600", border: "border-purple-300 bg-purple-50" },
+  http_error_inject: { label: "HTTP Error",    desc: "Returns 5xx at configurable rate",            icon: "⚠",  accent: "text-yellow-600", border: "border-yellow-300 bg-yellow-50" },
+  network_latency:   { label: "Net Latency",   desc: "Injects latency via Chaos Mesh",              icon: "⏱", accent: "text-blue-600",   border: "border-blue-300 bg-blue-50"    },
+  // Infra Layer — AWS FIS
+  node_failure:      { label: "Node Failure",  desc: "Terminates EC2 node; tests K8s reschedule",   icon: "⊗",  accent: "text-stone-600",  border: "border-stone-400 bg-stone-50"  },
+  az_isolation:      { label: "AZ Isolation",  desc: "Disconnects ap-northeast-1a subnet (120s)",   icon: "⊘",  accent: "text-cyan-700",   border: "border-cyan-300 bg-cyan-50"    },
 }
 
-// Deployment パッチ系は Fargate rolling update (~90s) 分の余裕が必要
+const K8S_FAULTS   = ["pod_kill", "cpu_stress", "memory_stress", "http_error_inject", "network_latency"]
+const INFRA_FAULTS = ["node_failure", "az_isolation"]
+
 const DEFAULT_DURATION: Record<string, number> = {
   pod_kill:          60,
   cpu_stress:        300,
   memory_stress:     300,
   http_error_inject: 600,
   network_latency:   300,
+  node_failure:      180,
+  az_isolation:      240,
 }
 
 export function ExperimentForm({ onBack: _onBack, onStarted }: Props) {
@@ -120,27 +128,47 @@ export function ExperimentForm({ onBack: _onBack, onStarted }: Props) {
         {/* Fault Type */}
         <div className="bg-white border border-slate-200 rounded-xl p-4">
           <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Fault Type</p>
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-            {Object.entries(FAULT_META).map(([key, m]) => (
-              <button
-                key={key}
-                type="button"
-                onClick={() => set("fault_type", key)}
-                className={`text-left px-3 py-2.5 rounded-lg border-2 transition-all ${
-                  form.fault_type === key
-                    ? `${m.border} border-opacity-100`
-                    : "border-slate-200 bg-white hover:border-slate-300"
-                }`}
-              >
-                <div className={`text-lg leading-none mb-1 ${form.fault_type === key ? m.accent : "text-slate-400"}`}>
-                  {m.icon}
-                </div>
-                <div className={`text-xs font-semibold ${form.fault_type === key ? "text-slate-900" : "text-slate-600"}`}>
-                  {m.label}
-                </div>
-                <div className="text-xs text-slate-400 mt-0.5 leading-snug">{m.desc}</div>
-              </button>
-            ))}
+
+          <p className="text-xs text-slate-400 mb-2">K8s Layer — Chaos Mesh</p>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-4">
+            {K8S_FAULTS.map(key => {
+              const m = FAULT_META[key]
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => set("fault_type", key)}
+                  className={`text-left px-3 py-2.5 rounded-lg border-2 transition-all ${
+                    form.fault_type === key ? `${m.border} border-opacity-100` : "border-slate-200 bg-white hover:border-slate-300"
+                  }`}
+                >
+                  <div className={`text-lg leading-none mb-1 ${form.fault_type === key ? m.accent : "text-slate-400"}`}>{m.icon}</div>
+                  <div className={`text-xs font-semibold ${form.fault_type === key ? "text-slate-900" : "text-slate-600"}`}>{m.label}</div>
+                  <div className="text-xs text-slate-400 mt-0.5 leading-snug">{m.desc}</div>
+                </button>
+              )
+            })}
+          </div>
+
+          <p className="text-xs text-slate-400 mb-2 border-t border-slate-100 pt-3">Infrastructure Layer — AWS FIS</p>
+          <div className="grid grid-cols-2 gap-2">
+            {INFRA_FAULTS.map(key => {
+              const m = FAULT_META[key]
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => set("fault_type", key)}
+                  className={`text-left px-3 py-2.5 rounded-lg border-2 transition-all ${
+                    form.fault_type === key ? `${m.border} border-opacity-100` : "border-slate-200 bg-white hover:border-slate-300"
+                  }`}
+                >
+                  <div className={`text-lg leading-none mb-1 ${form.fault_type === key ? m.accent : "text-slate-400"}`}>{m.icon}</div>
+                  <div className={`text-xs font-semibold ${form.fault_type === key ? "text-slate-900" : "text-slate-600"}`}>{m.label}</div>
+                  <div className="text-xs text-slate-400 mt-0.5 leading-snug">{m.desc}</div>
+                </button>
+              )
+            })}
           </div>
         </div>
 
@@ -152,19 +180,25 @@ export function ExperimentForm({ onBack: _onBack, onStarted }: Props) {
             <div className="flex items-center gap-3">
               <input
                 type="range"
-                min={10} max={600} step={10}
+                min={INFRA_FAULTS.includes(form.fault_type) ? 120 : 10} max={600} step={10}
                 value={form.duration}
                 onChange={e => set("duration", Number(e.target.value))}
                 className="flex-1 accent-red-600"
               />
               <input
                 type="number"
-                min={10} max={600}
+                min={INFRA_FAULTS.includes(form.fault_type) ? 120 : 10} max={600}
                 value={form.duration}
                 onChange={e => set("duration", Number(e.target.value))}
                 className="input w-20 text-center"
               />
             </div>
+            {form.fault_type === "az_isolation" && (
+              <p className="text-xs text-slate-400 mt-1.5">FIS template isolates subnet for 120s; duration sets total monitoring window.</p>
+            )}
+            {form.fault_type === "node_failure" && (
+              <p className="text-xs text-slate-400 mt-1.5">EC2 node terminates immediately; duration covers K8s rescheduling observation.</p>
+            )}
           </Field>
 
           {form.fault_type === "network_latency" && (
