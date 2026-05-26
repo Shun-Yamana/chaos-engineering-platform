@@ -12,9 +12,21 @@ from fastapi import FastAPI, HTTPException, Request
 
 from fastapi.middleware.cors import CORSMiddleware
 from aws_xray_sdk.core import xray_recorder, patch_all
+from aws_xray_sdk.core.async_context import AsyncContext
+from aws_xray_sdk.ext.fastapi import XRayMiddleware
 
-xray_recorder.configure(context_missing="LOG_ERROR")
+xray_recorder.configure(context_missing="LOG_ERROR", context=AsyncContext())
 patch_all()
+
+
+def _xray_headers() -> dict[str, str]:
+    try:
+        entity = xray_recorder.get_trace_entity()
+        if entity:
+            return {"X-Amzn-Trace-Id": f"Root={entity.trace_id};Parent={entity.id};Sampled=1"}
+    except Exception:
+        pass
+    return {}
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -30,6 +42,7 @@ app.add_middleware(
     allow_methods=["GET"],
     allow_headers=["*"],
 )
+app.add_middleware(XRayMiddleware, recorder=xray_recorder)
 
 @app.middleware("http")
 async def _annotate_experiment_id(request: Request, call_next):
@@ -307,7 +320,7 @@ async def aggregate(item_id: int):
 
     if _aggregate_cb.allow_request():
         try:
-            resp = await _http_aggregate.get(f"{SERVICE_B_INTERNAL_URL}/data/{item_id}")
+            resp = await _http_aggregate.get(f"{SERVICE_B_INTERNAL_URL}/data/{item_id}", headers=_xray_headers())
             resp.raise_for_status()
             data = resp.json()
             _stale_cache[item_id] = (data, monotonic())
@@ -343,7 +356,7 @@ async def _fetch_product_resilient(
     if _product_cb.allow_request():
         b_t0 = monotonic()
         try:
-            resp = await _http_b.get(f"{SERVICE_B_INTERNAL_URL}/products/{product_id}")
+            resp = await _http_b.get(f"{SERVICE_B_INTERNAL_URL}/products/{product_id}", headers=_xray_headers())
             resp.raise_for_status()
             product = resp.json()
             b_latency_ms = (monotonic() - b_t0) * 1000
@@ -376,7 +389,7 @@ async def _fetch_inventory(
 
     d_t0 = monotonic()
     try:
-        resp = await _http_d.get(f"{SERVICE_D_INTERNAL_URL}/inventory/{product_id}")
+        resp = await _http_d.get(f"{SERVICE_D_INTERNAL_URL}/inventory/{product_id}", headers=_xray_headers())
         resp.raise_for_status()
         data = resp.json()
         d_latency_ms = (monotonic() - d_t0) * 1000

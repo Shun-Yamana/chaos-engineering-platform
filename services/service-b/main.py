@@ -10,14 +10,27 @@ import psutil
 from fastapi import FastAPI, HTTPException, Request
 
 from aws_xray_sdk.core import xray_recorder, patch_all
+from aws_xray_sdk.core.async_context import AsyncContext
+from aws_xray_sdk.ext.fastapi import XRayMiddleware
 
-xray_recorder.configure(context_missing="LOG_ERROR")
+xray_recorder.configure(context_missing="LOG_ERROR", context=AsyncContext())
 patch_all()
+
+
+def _xray_headers() -> dict[str, str]:
+    try:
+        entity = xray_recorder.get_trace_entity()
+        if entity:
+            return {"X-Amzn-Trace-Id": f"Root={entity.trace_id};Parent={entity.id};Sampled=1"}
+    except Exception:
+        pass
+    return {}
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="service-b")
+app.add_middleware(XRayMiddleware, recorder=xray_recorder)
 
 
 @app.middleware("http")
@@ -240,7 +253,7 @@ async def get_data(item_id: int):
 async def _fetch_reviews(product_id: str) -> dict | None:
     """service-c からレビュー要約・レコメンドを取得する。失敗時は None を返す（非クリティカル）。"""
     try:
-        resp = await _http_c.get(f"{SERVICE_C_INTERNAL_URL}/reviews/{product_id}")
+        resp = await _http_c.get(f"{SERVICE_C_INTERNAL_URL}/reviews/{product_id}", headers=_xray_headers())
         resp.raise_for_status()
         return {**resp.json(), "_source": "fresh"}
     except Exception:
