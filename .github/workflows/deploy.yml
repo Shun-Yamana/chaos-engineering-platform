@@ -71,6 +71,9 @@ jobs:
           role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/chaos-platform-github-actions
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Verify NetworkPolicy coverage
+        run: python3 scripts/check-networkpolicy-coverage.py
+
       - name: Update kubeconfig
         run: aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${{ env.AWS_REGION }}
 
