@@ -97,9 +97,12 @@ spec:
               value: chaos-platform-experiment-history
             - name: AWS_REGION
               value: ap-northeast-1
-            # node_failure 実験用 FIS テンプレート (ADR 079)
+            # node_failure 実験用 FIS テンプレート (ADR 079, ADR 080)
             - name: FIS_TEMPLATE_NODE_FAILURE
               value: PLACEHOLDER_FIS_TEMPLATE_NODE_FAILURE
+            # az_isolation 実験用 FIS テンプレート (ADR 083)
+            - name: FIS_TEMPLATE_AZ_ISOLATION
+              value: PLACEHOLDER_FIS_TEMPLATE_AZ_ISOLATION
           resources:
             requests:
               cpu: "64m"

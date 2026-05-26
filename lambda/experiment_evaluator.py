@@ -34,6 +34,7 @@ _FAULT_LABELS = {
     "http_error_inject": "HTTP Error Inject",
     "network_latency":   "Network Latency",
     "node_failure":      "Node Failure",
+    "az_isolation":      "AZ Isolation",
 }
 
 
@@ -324,6 +325,22 @@ def evaluate_node_failure(fault_start: datetime, fault_end: datetime) -> tuple[l
     return phase_a, phase_b
 
 
+def evaluate_az_isolation(fault_start: datetime, fault_end: datetime) -> tuple[list, list]:
+    phase_a = [
+        # ALB が 10s で AZ-1a Pod を deregister → 1c 側に集約 (ADR 083)
+        _check("error_rate_during_fault",
+               get_alb_error_rate(fault_start, fault_end), "<=", 0.10),
+    ]
+    # ネットワーク回復後 30s 以内に ALB 再登録完了（ノード新規作成不要）(ADR 083)
+    ttr_s = _first_below_threshold(get_alb_error_rate, 0.01, fault_end, 90)
+    phase_b = [
+        _check("error_rate_recovery",
+               get_alb_error_rate(fault_end, fault_end + timedelta(seconds=90)),
+               "<=", 0.01, ttr_actual_s=ttr_s, ttr_limit_s=30),
+    ]
+    return phase_a, phase_b
+
+
 # ---------------------------------------------------------------------------
 # Safety net
 # ---------------------------------------------------------------------------
@@ -375,6 +392,8 @@ def evaluate(item: dict) -> dict:
         phase_a, phase_b = evaluate_network_latency(fault_start, fault_end)
     elif fault_type == "node_failure":
         phase_a, phase_b = evaluate_node_failure(fault_start, fault_end)
+    elif fault_type == "az_isolation":
+        phase_a, phase_b = evaluate_az_isolation(fault_start, fault_end)
     else:
         logger.warning(f"Unknown fault_type: {fault_type}")
         return {}

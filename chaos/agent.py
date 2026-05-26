@@ -57,7 +57,7 @@ class Experiment:
     name: str
     namespace: str
     service: str
-    fault_type: str        # pod_kill | cpu_stress | memory_stress | http_error_inject | network_latency | node_failure
+    fault_type: str        # pod_kill | cpu_stress | memory_stress | http_error_inject | network_latency | node_failure | az_isolation
     duration_seconds: int
     error_rate_threshold: float
     burn_rate_threshold: float
@@ -402,6 +402,20 @@ class ChaosAgent:
                     self._clear_experiment_ids(experiment)
                     return
 
+            elif experiment.fault_type == "az_isolation":
+                template_id = os.environ.get("FIS_TEMPLATE_AZ_ISOLATION", "")
+                if not template_id:
+                    raise RuntimeError("FIS_TEMPLATE_AZ_ISOLATION is not set")
+                fis_exp_id = self._fis_start(template_id, experiment.experiment_id)
+                self._active_fis[experiment.experiment_id] = fis_exp_id
+                result = self._fis_wait_and_monitor(fis_exp_id, experiment)
+                self._active_fis.pop(experiment.experiment_id, None)
+                if result == "failed":
+                    raise RuntimeError(f"FIS experiment {fis_exp_id} failed")
+                if result == "stopped":
+                    self._clear_experiment_ids(experiment)
+                    return
+
             else:
                 raise ValueError(f"Unknown fault_type: {experiment.fault_type}")
 
@@ -418,7 +432,7 @@ class ChaosAgent:
     def stop(self, experiment: Experiment, reason: str = "manual"):
         if experiment.fault_type in _CM_FAULT_TYPES:
             self._cm_emergency_stop(experiment)
-        elif experiment.fault_type == "node_failure":
+        elif experiment.fault_type in ("node_failure", "az_isolation"):
             fis_exp_id = self._active_fis.get(experiment.experiment_id)
             if fis_exp_id:
                 try:

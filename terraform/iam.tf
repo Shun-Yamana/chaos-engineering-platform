@@ -259,6 +259,19 @@ resource "aws_iam_policy" "fis_execution" {
         Action   = ["ec2:DescribeInstances"]
         Resource = "*"
       },
+      {
+        # az_isolation: aws:network:disrupt-connectivity がルートテーブルを操作 (ADR 083)
+        Sid    = "AZIsolation"
+        Effect = "Allow"
+        Action = [
+          "ec2:DescribeSubnets",
+          "ec2:DescribeRouteTables",
+          "ec2:CreateRoute",
+          "ec2:DeleteRoute",
+          "ec2:ReplaceRoute",
+        ]
+        Resource = "*"
+      },
     ]
   })
 
