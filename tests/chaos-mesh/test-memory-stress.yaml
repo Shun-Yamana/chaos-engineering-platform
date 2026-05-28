@@ -1,7 +1,7 @@
 apiVersion: chaos-mesh.org/v1alpha1
 kind: StressChaos
 metadata:
-  name: test-cpu-stress
+  name: test-memory-stress
   namespace: test
 spec:
   mode: one
@@ -11,7 +11,7 @@ spec:
     labelSelectors:
       app: nginx-target
   stressors:
-    cpu:
-      workers: 2
-      load: 80
+    memory:
+      workers: 1
+      size: 64MB
   duration: 30s
