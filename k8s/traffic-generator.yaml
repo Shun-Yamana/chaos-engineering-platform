@@ -1,0 +1,87 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: traffic-generator-script
+  namespace: default
+data:
+  run.py: |
+    import urllib.request, time, random, os, logging
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+    log = logging.getLogger(__name__)
+
+    HOST = os.environ.get("TARGET_HOST", "service-a.default.svc.cluster.local")
+    PORT = os.environ.get("TARGET_PORT", "8000")
+    RPS  = int(os.environ.get("TARGET_RPS", "20"))
+
+    log.info(f"traffic-generator started: {HOST}:{PORT} @ {RPS} req/s")
+
+    while True:
+        t0 = time.monotonic()
+        ok = err = 0
+        for _ in range(RPS):
+            pid = random.randint(1, 20)
+            try:
+                urllib.request.urlopen(
+                    f"http://{HOST}:{PORT}/aggregate/products/{pid}", timeout=3
+                )
+                ok += 1
+            except Exception:
+                err += 1
+        elapsed = time.monotonic() - t0
+        log.info(f"ok={ok} err={err} elapsed={elapsed:.2f}s")
+        if elapsed < 1.0:
+            time.sleep(1.0 - elapsed)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: traffic-generator
+  namespace: default
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: traffic-generator
+  template:
+    metadata:
+      labels:
+        app: traffic-generator
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: script
+          configMap:
+            name: traffic-generator-script
+      containers:
+        - name: traffic-generator
+          image: python:3.13-slim
+          command: ["python", "/scripts/run.py"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+          env:
+            - name: TARGET_HOST
+              value: "service-a.default.svc.cluster.local"
+            - name: TARGET_PORT
+              value: "8000"
+            - name: TARGET_RPS
+              value: "20"
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"

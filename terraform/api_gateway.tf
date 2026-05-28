@@ -102,7 +102,7 @@ resource "aws_apigatewayv2_api" "chaos" {
       "http://localhost:5173",
       "https://${aws_cloudfront_distribution.frontend.domain_name}",
     ]
-    allow_methods = ["GET", "POST", "DELETE", "OPTIONS"]
+    allow_methods = ["GET", "POST", "DELETE", "PUT", "OPTIONS"]
     allow_headers = ["Content-Type", "Authorization"]
     max_age       = 3600
   }
@@ -187,6 +187,22 @@ resource "aws_apigatewayv2_route" "get_experiments" {
 resource "aws_apigatewayv2_route" "get_experiment" {
   api_id             = aws_apigatewayv2_api.chaos.id
   route_key          = "GET /experiments/{id}"
+  target             = "integrations/${aws_apigatewayv2_integration.api_handler.id}"
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito.id
+}
+
+resource "aws_apigatewayv2_route" "get_traffic" {
+  api_id             = aws_apigatewayv2_api.chaos.id
+  route_key          = "GET /traffic"
+  target             = "integrations/${aws_apigatewayv2_integration.api_handler.id}"
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito.id
+}
+
+resource "aws_apigatewayv2_route" "put_traffic" {
+  api_id             = aws_apigatewayv2_api.chaos.id
+  route_key          = "PUT /traffic"
   target             = "integrations/${aws_apigatewayv2_integration.api_handler.id}"
   authorization_type = "JWT"
   authorizer_id      = aws_apigatewayv2_authorizer.cognito.id

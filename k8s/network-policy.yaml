@@ -47,6 +47,9 @@ spec:
         - podSelector:
             matchLabels:
               app: service-b
+        - podSelector:
+            matchLabels:
+              app: traffic-generator
       ports:
         - protocol: TCP
           port: 8000
@@ -269,6 +272,38 @@ spec:
       ports:
         - protocol: TCP
           port: 443
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+---
+# ⑦ traffic-generator: Egress service-a:8000 + CoreDNS
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: traffic-generator
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app: traffic-generator
+  policyTypes:
+    - Ingress
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: service-a
+      ports:
+        - protocol: TCP
+          port: 8000
     - to:
         - namespaceSelector:
             matchLabels:

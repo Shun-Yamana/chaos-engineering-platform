@@ -121,6 +121,28 @@ def get_experiment(experiment_id: str) -> dict:
     return response(200, items[0])
 
 
+_TRAFFIC_KEY = {"experiment_id": "TRAFFIC_CONTROL", "started_at": "SINGLETON"}
+
+
+def get_traffic() -> dict:
+    table = dynamodb.Table(EXPERIMENT_TABLE)
+    item = table.get_item(Key=_TRAFFIC_KEY).get("Item", {})
+    return response(200, {"running": bool(item.get("running", False))})
+
+
+def put_traffic(body: dict) -> dict:
+    if "running" not in body:
+        return response(400, {"error": "missing field: running"})
+
+    table = dynamodb.Table(EXPERIMENT_TABLE)
+    table.put_item(Item={
+        **_TRAFFIC_KEY,
+        "running": bool(body["running"]),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return response(200, {"running": bool(body["running"])})
+
+
 def handler(event, context):
     # API Gateway HTTP API v2 は requestContext.http.method / rawPath を使う (payload_format_version = "2.0")
     http_ctx = event.get("requestContext", {}).get("http", {})
@@ -154,5 +176,11 @@ def handler(event, context):
     if method == "GET" and path.startswith("/experiments/"):
         experiment_id = path.split("/")[-1]
         return get_experiment(experiment_id)
+
+    if method == "GET" and path == "/traffic":
+        return get_traffic()
+
+    if method == "PUT" and path == "/traffic":
+        return put_traffic(body)
 
     return response(404, {"error": "not found"})

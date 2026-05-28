@@ -4,6 +4,7 @@ import { ExperimentForm } from "./components/ExperimentForm"
 import { ExperimentDetail } from "./components/ExperimentDetail"
 import { ProductDetailView } from "./components/ProductDetailView"
 import { LoginPage } from "./components/LoginPage"
+import { TrafficControl } from "./components/TrafficControl"
 import { handleCallback, isAuthenticated, signOut } from "./auth"
 
 type View =
@@ -53,7 +54,8 @@ export default function App() {
           </div>
         </button>
 
-        <nav className="flex items-center gap-1">
+        <nav className="flex items-center gap-2">
+          <TrafficControl />
           <button
             onClick={() => setView({ type: "live" })}
             className={`text-xs px-3 py-1.5 rounded-md transition-colors ${

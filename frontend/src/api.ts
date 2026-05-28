@@ -89,4 +89,8 @@ export const api = {
     req<{ experiment_id: string; status: string }>("POST", "/experiments", payload),
   stopExperiment: (id: string) =>
     req<{ experiment_id: string; status: string }>("DELETE", `/experiments/${id}`, { reason: "manual" }),
+  getTraffic: () =>
+    req<{ running: boolean }>("GET", "/traffic"),
+  setTraffic: (running: boolean) =>
+    req<{ running: boolean }>("PUT", "/traffic", { running }),
 }

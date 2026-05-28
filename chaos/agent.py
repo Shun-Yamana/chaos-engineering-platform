@@ -506,10 +506,31 @@ class ChaosAgentPoller:
         finally:
             self._running.pop(experiment.experiment_id, None)
 
+    def _check_traffic_control(self):
+        """DynamoDB の TRAFFIC_CONTROL 項目に基づき traffic-generator の replicas を同期する"""
+        try:
+            item = self._table.get_item(
+                Key={"experiment_id": "TRAFFIC_CONTROL", "started_at": "SINGLETON"}
+            ).get("Item", {})
+            want = 1 if item.get("running") else 0
+            scale = self._agent.apps_v1.read_namespaced_deployment_scale(
+                name="traffic-generator", namespace="default"
+            )
+            if scale.spec.replicas != want:
+                scale.spec.replicas = want
+                self._agent.apps_v1.patch_namespaced_deployment_scale(
+                    name="traffic-generator", namespace="default", body=scale
+                )
+                logger.info(f"traffic-generator scaled to {want}")
+        except Exception as e:
+            logger.warning(f"traffic control check failed: {e}")
+
     def _poll(self):
         done = [eid for eid, t in self._running.items() if not t.is_alive()]
         for eid in done:
             self._running.pop(eid, None)
+
+        self._check_traffic_control()
 
         for item in self._scan_pending():
             eid = item["experiment_id"]
