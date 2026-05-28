@@ -283,7 +283,8 @@ spec:
           port: 53
 ---
 ---
-# ⑦ traffic-generator: Egress service-a:8000 + CoreDNS
+# ⑦ traffic-generator: Egress service-a:8000 (ClusterIP CIDR + pod CIDR) + CoreDNS
+# VPC CNI の podSelector は ClusterIP を透過しないため ipBlock で service CIDR と VPC CIDR を許可
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -298,9 +299,10 @@ spec:
     - Egress
   egress:
     - to:
-        - podSelector:
-            matchLabels:
-              app: service-a
+        - ipBlock:
+            cidr: 172.20.0.0/16
+        - ipBlock:
+            cidr: 10.0.0.0/8
       ports:
         - protocol: TCP
           port: 8000
