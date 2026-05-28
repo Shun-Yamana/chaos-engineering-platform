@@ -32,11 +32,11 @@ _CM_VERSION = "v1alpha1"
 
 # fault_type → Chaos Mesh CRD plural name
 _CM_PLURAL = {
-    "pod_kill":         "podchaoses",
-    "cpu_stress":       "stresschaoses",
-    "memory_stress":    "stresschaoses",
-    "network_latency":  "networkchaoses",
-    "http_error_inject": "httpchaoses",
+    "pod_kill":         "podchaos",
+    "cpu_stress":       "stresschaos",
+    "memory_stress":    "stresschaos",
+    "network_latency":  "networkchaos",
+    "http_error_inject": "httpchaos",
 }
 
 _CM_FAULT_TYPES = frozenset(_CM_PLURAL.keys())

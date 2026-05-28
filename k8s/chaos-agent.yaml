@@ -30,7 +30,7 @@ rules:
     verbs: ["get"]
   # Chaos Mesh CRD 管理 (ADR 079, ADR 081)
   - apiGroups: ["chaos-mesh.org"]
-    resources: ["podchaoses", "stresschaoses", "networkchaoses", "httpchaoses"]
+    resources: ["podchaos", "stresschaos", "networkchaos", "httpchaos"]
     verbs: ["create", "get", "delete", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

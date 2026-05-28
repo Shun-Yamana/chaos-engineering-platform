@@ -28,6 +28,10 @@ EC2 メタデータ依存は「NetworkPolicy がある限り必ず失敗する�
 ローカルデプロイは EKS 再構築時の一時的な作業であり、CI が本線。
 スクリプト追加によるメンテナンスコストより、手順メモとして残す方が軽量。
 
+## Future Work
+
+- `terraform output` → `.env.production` 自動更新 → `npm build` → `s3 sync` → CF invalidation を `scripts/deploy-frontend.ps1` に統合済み。terraform apply 後は `.\scripts\deploy-frontend.ps1` 1コマンドで完結する。
+
 ## Consequences
 
 - xray-daemon は `AWS_REGION` を環境変数で固定するため、リージョン変更時は manifest 更新が必要
