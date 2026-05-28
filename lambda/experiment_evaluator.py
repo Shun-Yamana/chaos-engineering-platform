@@ -228,13 +228,14 @@ def evaluate_cpu_stress(fault_start: datetime, fault_end: datetime) -> tuple[lis
         _check("p95_latency_ms", get_alb_p95_ms(fault_start, fault_end), "<=", 1000),
         _check("error_rate", get_alb_error_rate(fault_start, fault_end), "<=", 0.05),
     ]
-    # stress-ng 停止直後は CPU スケジューラの再調整で数十秒レイテンシが残る
-    # fault_end + 60s 以降を計測し、閾値も Phase A 実測値に合わせて緩める
-    ttr_s = _first_below_threshold(get_alb_p95_ms, 500, fault_end, 180)
+    # Phase B: traffic-generator は ALB を経由しないため EMF AggregateDurationMs を使用
+    # stress-ng 停止直後は CPU スケジューラの再調整で数十秒レイテンシが残るため 60s オフセット
+    emf_p95_fn = lambda s, e: get_emf_p95_ms("AggregateDurationMs", "service-a", s, e)
+    ttr_s = _first_below_threshold(emf_p95_fn, 500, fault_end, 180)
     phase_b = [
         _check("p95_latency_ms_recovery",
-               get_alb_p95_ms(fault_end + timedelta(seconds=60),
-                              fault_end + timedelta(seconds=180)),
+               emf_p95_fn(fault_end + timedelta(seconds=60),
+                          fault_end + timedelta(seconds=180)),
                "<=", 500, ttr_actual_s=ttr_s, ttr_limit_s=120),
     ]
     return phase_a, phase_b
