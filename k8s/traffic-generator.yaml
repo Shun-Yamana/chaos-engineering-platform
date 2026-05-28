@@ -42,7 +42,7 @@ data:
         ok = err = 0
         ip = get_pod_ip()
         for _ in range(RPS):
-            pid = random.randint(1, 20)
+            pid = random.choice(["p-001", "p-002", "p-003"])
             try:
                 conn = http.client.HTTPConnection(ip or HEADLESS, PORT, timeout=3)
                 conn.request("GET", f"/aggregate/products/{pid}")
