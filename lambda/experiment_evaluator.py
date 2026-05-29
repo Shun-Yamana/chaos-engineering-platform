@@ -281,25 +281,26 @@ def evaluate_http_error_inject(item: dict, fault_start: datetime, fault_end: dat
     # HTTPChaos → service-c abort → service-b がキャッシュ応答
     # → service-a は product_source=stale_cache を検出して StaleCacheHitCount を記録。
     # traffic-generator が ALB をバイパスするため ALB エラーレートは常に 0 になる (ADR 090)。
-    stale_count  = get_emf_sum("StaleCacheHitCount", "service-a", fault_start, fault_end)
-    cascade_rate = get_alb_error_rate(fault_start, fault_end)
+    # service-c abort → service-b が reviews=null を返す → service-a が ReviewsUnavailableCount を発火
+    reviews_unavail = get_emf_sum("ReviewsUnavailableCount", "service-a", fault_start, fault_end)
+    cascade_rate    = get_alb_error_rate(fault_start, fault_end)
 
     phase_a = [
-        # 劣化が service-a まで観測されること（service-b が stale キャッシュで止血した証拠）
-        _check("stale_cache_hit_count", stale_count, ">=", 1),
-        # カスケード障害が起きていないこと（エンドユーザー影響なし）
+        # reviews が null になっていること（service-c 障害が service-a まで観測できる）
+        _check("reviews_unavailable_count", reviews_unavail, ">=", 1),
+        # カスケード障害が起きていないこと（エンドユーザーへの HTTP エラーなし）
         _check("cascade_error_rate", cascade_rate, "<=", 0.05),
     ]
 
-    # Phase B: HTTPChaos 削除後に stale ヒットが収束すること（service-c 回復 → 新鮮データに戻る）
+    # Phase B: HTTPChaos 削除後に reviews が復活すること（service-c 回復）
     ttr_s = _first_below_threshold(
-        lambda s, e: get_emf_sum("StaleCacheHitCount", "service-a", s, e),
-        0.5,  # 0 ヒット（< 0.5）を「回復」とみなす
+        lambda s, e: get_emf_sum("ReviewsUnavailableCount", "service-a", s, e),
+        0.5,  # 0 件（< 0.5）を「回復」とみなす
         fault_end, 120,
     )
     phase_b = [
-        _check("stale_cache_recovery",
-               get_emf_sum("StaleCacheHitCount", "service-a",
+        _check("reviews_recovery",
+               get_emf_sum("ReviewsUnavailableCount", "service-a",
                            fault_end, fault_end + timedelta(seconds=120)),
                "<=", 0, ttr_actual_s=ttr_s, ttr_limit_s=60),
     ]

@@ -182,6 +182,7 @@ def _emit_product_aggregate_emf(
     product_source: str,
     inventory_source: str,
     circuit_state: str,
+    reviews_available: bool = True,
 ):
     emf = {
         "_aws": {
@@ -190,13 +191,14 @@ def _emit_product_aggregate_emf(
                 "Namespace": "ChaosExperiment",
                 "Dimensions": [["Service"], ["Service", "ExperimentId"]],
                 "Metrics": [
-                    {"Name": "AggregateDurationMs",       "Unit": "Milliseconds"},
-                    {"Name": "ServiceBCallDurationMs",     "Unit": "Milliseconds"},
-                    {"Name": "ServiceDCallDurationMs",     "Unit": "Milliseconds"},
-                    {"Name": "FallbackCount",              "Unit": "Count"},
-                    {"Name": "StaleCacheHitCount",         "Unit": "Count"},
-                    {"Name": "InventoryUnavailableCount",  "Unit": "Count"},
-                    {"Name": "CircuitBreakerState",        "Unit": "None"},
+                    {"Name": "AggregateDurationMs",         "Unit": "Milliseconds"},
+                    {"Name": "ServiceBCallDurationMs",       "Unit": "Milliseconds"},
+                    {"Name": "ServiceDCallDurationMs",       "Unit": "Milliseconds"},
+                    {"Name": "FallbackCount",                "Unit": "Count"},
+                    {"Name": "StaleCacheHitCount",           "Unit": "Count"},
+                    {"Name": "InventoryUnavailableCount",    "Unit": "Count"},
+                    {"Name": "ReviewsUnavailableCount",      "Unit": "Count"},
+                    {"Name": "CircuitBreakerState",          "Unit": "None"},
                 ],
             }],
         },
@@ -208,6 +210,7 @@ def _emit_product_aggregate_emf(
         "FallbackCount": 1 if product_source == "fallback" else 0,
         "StaleCacheHitCount": 1 if product_source == "stale_cache" else 0,
         "InventoryUnavailableCount": 1 if inventory_source != "fresh" else 0,
+        "ReviewsUnavailableCount": 0 if reviews_available else 1,
         "CircuitBreakerState": 0 if circuit_state == "closed" else 1,
     }
     print(json.dumps(emf), flush=True)
@@ -449,6 +452,7 @@ async def aggregate_product(product_id: str):
     _emit_product_aggregate_emf(
         a_ms, b_latency_ms, d_latency_ms,
         product_source, inventory_source, circuit_state,
+        reviews_available=product.get("reviews") is not None,
     )
 
     return {
