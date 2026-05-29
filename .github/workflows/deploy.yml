@@ -25,6 +25,7 @@ jobs:
     name: Build & Push ${{ matrix.service }}
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         include:
           - service: service-a
