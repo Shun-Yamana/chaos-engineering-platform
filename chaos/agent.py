@@ -65,7 +65,7 @@ class Experiment:
     experiment_table: str
     started_at: str | None = None
     latency_ms: int = 500
-    fault_rate: float = 0.5
+    fault_rate: float = 1.0  # 100%: Envoy の retry_on=reset を突破するために全量 abort が必要
     memory_stress_mb: int = 150
 
 
