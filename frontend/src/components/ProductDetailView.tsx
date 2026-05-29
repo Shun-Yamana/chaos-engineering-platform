@@ -56,7 +56,7 @@ interface AggregateResponse {
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
-const SERVICE_A_BASE = import.meta.env.VITE_SERVICE_A_ENDPOINT ?? "http://localhost:8080"
+const SERVICE_A_BASE = import.meta.env.VITE_SERVICE_A_ENDPOINT ?? (import.meta.env.DEV ? "http://localhost:8080" : "")
 
 const PRODUCTS = [
   { id: "p-001", label: "Keyboard",  icon: "⌨️" },

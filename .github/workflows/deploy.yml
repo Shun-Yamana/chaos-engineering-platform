@@ -183,6 +183,7 @@ jobs:
           VITE_API_ENDPOINT: ${{ secrets.API_ENDPOINT }}
           VITE_COGNITO_DOMAIN: ${{ secrets.COGNITO_DOMAIN }}
           VITE_COGNITO_CLIENT_ID: ${{ secrets.COGNITO_CLIENT_ID }}
+          VITE_SERVICE_A_ENDPOINT: ""
         run: |
           npm ci
           npm run build
