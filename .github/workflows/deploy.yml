@@ -135,7 +135,24 @@ jobs:
           kubectl apply -f k8s/hpa.yaml
           kubectl apply -f k8s/pdb.yaml
 
+      - name: Check for running experiments
+        id: check_experiments
+        run: |
+          RUNNING=$(aws dynamodb scan \
+            --table-name chaos-platform-experiment-history \
+            --region ${{ env.AWS_REGION }} \
+            --filter-expression "#s = :running" \
+            --expression-attribute-names '{"#s":"status"}' \
+            --expression-attribute-values '{":running":{"S":"running"}}' \
+            --query 'length(Items[?experiment_id.S != `TRAFFIC_CONTROL`])' \
+            --output text)
+          echo "running_count=$RUNNING" >> $GITHUB_OUTPUT
+          if [ "$RUNNING" -gt "0" ]; then
+            echo "⚠️ $RUNNING experiment(s) running — skipping chaos-agent deploy to avoid interruption"
+          fi
+
       - name: Deploy chaos-agent
+        if: steps.check_experiments.outputs.running_count == '0'
         env:
           ECR: ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
           CHAOS_AGENT_ROLE_ARN: ${{ secrets.CHAOS_AGENT_ROLE_ARN }}
