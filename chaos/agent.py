@@ -547,8 +547,50 @@ class ChaosAgentPoller:
             thread.start()
             logger.info(f"[{eid}] experiment thread started: {experiment.fault_type}")
 
+    def _startup_cleanup(self):
+        """起動時: 前回の agent クラッシュ/再起動で残った running 実験を stopped に遷移させる。
+        Chaos Mesh CR が残っていれば削除して障害注入を解除する。"""
+        items = []
+        kwargs: dict = {"FilterExpression": Attr("status").eq("running")}
+        while True:
+            resp = self._table.scan(**kwargs)
+            items.extend(resp.get("Items", []))
+            if "LastEvaluatedKey" not in resp:
+                break
+            kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+
+        for item in items:
+            eid = item.get("experiment_id", "")
+            if eid == "TRAFFIC_CONTROL":
+                continue
+            logger.warning(f"[{eid}] orphaned running experiment found on startup — cleaning up")
+            try:
+                experiment = _item_to_experiment(item)
+                plural = _CM_PLURAL.get(experiment.fault_type)
+                if plural:
+                    name = self._agent._cm_cr_name(experiment)
+                    self._agent._cm_delete(plural, name, experiment.namespace)
+            except Exception as e:
+                logger.warning(f"[{eid}] CR cleanup failed (may not exist): {e}")
+            try:
+                self._table.update_item(
+                    Key={"experiment_id": eid, "started_at": item["started_at"]},
+                    UpdateExpression="SET #st = :stopped, stop_reason = :reason, stopped_at = :now",
+                    ConditionExpression=Attr("status").eq("running"),
+                    ExpressionAttributeNames={"#st": "status"},
+                    ExpressionAttributeValues={
+                        ":stopped": "stopped",
+                        ":reason": "agent_restart",
+                        ":now": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+                logger.info(f"[{eid}] marked as stopped (agent_restart)")
+            except Exception as e:
+                logger.warning(f"[{eid}] DynamoDB update failed: {e}")
+
     def run_forever(self):
         logger.info(f"chaos-agent poller started (interval={self._poll_interval}s, table={self._table.name})")
+        self._startup_cleanup()
         while True:
             try:
                 self._poll()
