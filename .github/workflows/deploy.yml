@@ -90,6 +90,7 @@ jobs:
           kubectl apply -f k8s/namespace.yaml
           kubectl apply -f k8s/network-policy.yaml
           kubectl apply -f k8s/envoy-config.yaml
+          kubectl apply -f k8s/traffic-generator.yaml
 
       - name: Apply ingress
         env:
