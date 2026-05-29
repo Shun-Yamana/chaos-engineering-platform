@@ -155,10 +155,13 @@ resource "aws_iam_policy" "chaos_agent" {
         Resource = aws_dynamodb_table.experiment_history.arn
       },
       {
-        Sid      = "FISStart"
-        Effect   = "Allow"
-        Action   = ["fis:StartExperiment"]
-        Resource = "arn:aws:fis:${var.aws_region}:${data.aws_caller_identity.current.account_id}:experiment-template/*"
+        Sid    = "FISStart"
+        Effect = "Allow"
+        Action = ["fis:StartExperiment"]
+        Resource = [
+          "arn:aws:fis:${var.aws_region}:${data.aws_caller_identity.current.account_id}:experiment-template/*",
+          "arn:aws:fis:${var.aws_region}:${data.aws_caller_identity.current.account_id}:experiment/*",
+        ]
         Condition = {
           StringEquals = { "aws:ResourceTag/Project" = "chaos-platform" }
         }
