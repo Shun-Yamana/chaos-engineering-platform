@@ -54,8 +54,12 @@ jobs:
         run: |
           ECR=${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
           IMAGE=$ECR/chaos-platform/${{ matrix.service }}:${{ github.sha }}
-          docker build -t $IMAGE ${{ matrix.context }}
-          docker push $IMAGE
+          if aws ecr describe-images --repository-name chaos-platform/${{ matrix.service }} --image-ids imageTag=${{ github.sha }} > /dev/null 2>&1; then
+            echo "Image $IMAGE already exists in ECR, skipping build."
+          else
+            docker build -t $IMAGE ${{ matrix.context }}
+            docker push $IMAGE
+          fi
 
   deploy:
     name: Deploy to EKS

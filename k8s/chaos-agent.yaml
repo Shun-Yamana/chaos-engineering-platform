@@ -109,6 +109,8 @@ spec:
             # az_isolation 実験用 FIS テンプレート (ADR 083)
             - name: FIS_TEMPLATE_AZ_ISOLATION
               value: PLACEHOLDER_FIS_TEMPLATE_AZ_ISOLATION
+            - name: SERVICE_B_URL
+              value: http://k8s-default-serviceb-64e7c32426-96205474.ap-northeast-1.elb.amazonaws.com/items/1
           resources:
             requests:
               cpu: "64m"
