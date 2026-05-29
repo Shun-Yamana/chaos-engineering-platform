@@ -226,7 +226,8 @@ class ChaosAgent:
             base["spec"]["selector"]["labelSelectors"]["app"] = target_svc
             base["spec"]["target"] = "Response"
             base["spec"]["port"] = 8000
-            base["spec"]["path"] = "*"
+            # /health を除外。/* だとヘルスチェックも abort され Pod が CrashLoop に入る
+            base["spec"]["path"] = "/reviews/*"
             base["spec"]["abort"] = True
             base["spec"]["percent"] = int(experiment.fault_rate * 100)
             base["spec"]["duration"] = f"{experiment.duration_seconds}s"
