@@ -174,7 +174,7 @@ resource "aws_iam_policy" "chaos_agent" {
       {
         Sid      = "FISManage"
         Effect   = "Allow"
-        Action   = ["fis:StopExperiment", "fis:GetExperiment"]
+        Action   = ["fis:StopExperiment", "fis:GetExperiment", "fis:TagResource"]
         Resource = "arn:aws:fis:${var.aws_region}:${data.aws_caller_identity.current.account_id}:experiment/*"
       },
       {
