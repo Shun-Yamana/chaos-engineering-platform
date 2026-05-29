@@ -221,6 +221,7 @@ resource "aws_cloudwatch_metric_alarm" "service_b_5xx_rate" {
     }
   }
 
+  treat_missing_data = "notBreaching"
   alarm_actions = [aws_sns_topic.chaos_alerts.arn]
   ok_actions    = [aws_sns_topic.chaos_alerts.arn]
   tags          = local.common_tags
