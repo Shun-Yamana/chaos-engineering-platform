@@ -41,6 +41,45 @@ resource "aws_iam_role_policy_attachment" "eks_node_ssm" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
+# Fluent Bit (EC2 ノード DaemonSet) が Container Insights ログを CloudWatch Logs へ送信するために必要
+resource "aws_iam_policy" "eks_node_cloudwatch_logs" {
+  name = "${var.project_name}-eks-node-cloudwatch-logs"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "CloudWatchLogs"
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents",
+          "logs:DescribeLogStreams",
+        ]
+        Resource = [
+          "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:log-group:/aws/containerinsights/${var.project_name}-cluster:*",
+          "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:log-group:/aws/containerinsights/${var.project_name}-cluster/*",
+          "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:log-group:/aws/containerinsights/${var.project_name}-cluster/*:*",
+        ]
+      },
+      {
+        Sid      = "CloudWatchMetrics"
+        Effect   = "Allow"
+        Action   = ["cloudwatch:PutMetricData"]
+        Resource = "*"
+      },
+    ]
+  })
+
+  tags = var.tags
+}
+
+resource "aws_iam_role_policy_attachment" "eks_node_cloudwatch_logs" {
+  role       = aws_iam_role.eks_node.name
+  policy_arn = aws_iam_policy.eks_node_cloudwatch_logs.arn
+}
+
 resource "aws_eks_node_group" "main" {
   cluster_name    = aws_eks_cluster.main.name
   node_group_name = "${var.project_name}-node-group"
@@ -65,5 +104,6 @@ resource "aws_eks_node_group" "main" {
     aws_iam_role_policy_attachment.eks_node_cni,
     aws_iam_role_policy_attachment.eks_node_xray,
     aws_iam_role_policy_attachment.eks_node_ssm,
+    aws_iam_role_policy_attachment.eks_node_cloudwatch_logs,
   ]
 }

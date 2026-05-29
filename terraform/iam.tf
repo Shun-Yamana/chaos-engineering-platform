@@ -311,7 +311,10 @@ data "aws_iam_policy_document" "cloudwatch_agent_assume_role" {
     condition {
       test     = "StringEquals"
       variable = "${module.eks.oidc_provider}:sub"
-      values   = ["system:serviceaccount:amazon-cloudwatch-observability:cloudwatch-agent"]
+      values   = [
+        "system:serviceaccount:amazon-cloudwatch-observability:cloudwatch-agent",
+        "system:serviceaccount:amazon-cloudwatch:cloudwatch-agent",
+      ]
     }
   }
 }
