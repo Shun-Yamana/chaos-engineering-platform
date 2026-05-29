@@ -158,6 +158,13 @@ data:
         type: STRICT_DNS
         dns_refresh_rate: 5s
         lb_policy: ROUND_ROBIN
+        # max_connection_duration: 接続を定期的に更新することで
+        # HTTPChaos tproxy が既存 keepalive 接続を素通りする問題を防ぐ
+        typed_extension_protocol_options:
+          envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+            "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+            common_http_protocol_options:
+              max_connection_duration: 5s
         load_assignment:
           cluster_name: service_c_cluster
           endpoints:
