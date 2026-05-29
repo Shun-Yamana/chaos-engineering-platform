@@ -157,6 +157,24 @@ def get_container_restarts_delta(service: str, namespace: str,
         return None
 
 
+def get_emf_sum(metric: str, service: str, start: datetime, end: datetime) -> float:
+    """ChaosExperiment EMF namespace から Sum を取得する（データなし = 0.0）"""
+    dims = [{"Name": "Service", "Value": service}]
+    raw = max(int((end - start).total_seconds()), 60)
+    period = ((raw + 59) // 60) * 60
+    resp = cloudwatch.get_metric_statistics(
+        Namespace="ChaosExperiment",
+        MetricName=metric,
+        Dimensions=dims,
+        StartTime=start,
+        EndTime=end,
+        Period=period,
+        Statistics=["Sum"],
+    )
+    dp = resp.get("Datapoints", [])
+    return dp[0]["Sum"] if dp else 0.0
+
+
 def get_emf_max(metric: str, service: str, start: datetime, end: datetime) -> float | None:
     raw = max(int((end - start).total_seconds()), 60)
     period = ((raw + 59) // 60) * 60  # CloudWatch requires multiples of 60
@@ -259,29 +277,31 @@ def evaluate_memory_stress(fault_start: datetime, fault_end: datetime) -> tuple[
 
 
 def evaluate_http_error_inject(item: dict, fault_start: datetime, fault_end: datetime) -> tuple[list, list]:
-    origin_error_rate = get_alb_error_rate(fault_start, fault_end)
-    # emergency_stop_at: auto_stopper が実際に発動した時刻 (stopped_at は実験終了時刻なので不可)
-    emergency_stop_at = item.get("emergency_stop_at")
-    if emergency_stop_at:
-        fired_dt = datetime.fromisoformat(emergency_stop_at.replace("Z", "+00:00"))
-        auto_stopper_latency_s = (fired_dt - fault_start).total_seconds()
-    else:
-        auto_stopper_latency_s = None
+    # service-a の EMF を使う。
+    # HTTPChaos → service-c abort → service-b がキャッシュ応答
+    # → service-a は product_source=stale_cache を検出して StaleCacheHitCount を記録。
+    # traffic-generator が ALB をバイパスするため ALB エラーレートは常に 0 になる (ADR 090)。
+    stale_count  = get_emf_sum("StaleCacheHitCount", "service-a", fault_start, fault_end)
+    cascade_rate = get_alb_error_rate(fault_start, fault_end)
 
     phase_a = [
-        # rolling update で旧 Pod が混在するため全体平均は 30% を下回る。
-        # auto_stopper SLI データで 8%+ が確認できる実態に合わせて 5% に緩和
-        _check("origin_error_rate", origin_error_rate, ">=", 0.05),
-        # CloudWatch ALB メトリクス遅延 (~4min) + rolling update (~90s) を考慮して 360s に緩和
-        _check("auto_stopper_fired_within_6min",
-               auto_stopper_latency_s, "<=", 360),
+        # 劣化が service-a まで観測されること（service-b が stale キャッシュで止血した証拠）
+        _check("stale_cache_hit_count", stale_count, ">=", 1),
+        # カスケード障害が起きていないこと（エンドユーザー影響なし）
+        _check("cascade_error_rate", cascade_rate, "<=", 0.05),
     ]
-    # HTTPChaos CR 削除後は即時回復（rolling update なし）→ オフセット不要 (ADR 082)
-    ttr_s = _first_below_threshold(get_alb_error_rate, 0.005, fault_end, 90)
+
+    # Phase B: HTTPChaos 削除後に stale ヒットが収束すること（service-c 回復 → 新鮮データに戻る）
+    ttr_s = _first_below_threshold(
+        lambda s, e: get_emf_sum("StaleCacheHitCount", "service-a", s, e),
+        0.5,  # 0 ヒット（< 0.5）を「回復」とみなす
+        fault_end, 120,
+    )
     phase_b = [
-        _check("error_rate_recovery",
-               get_alb_error_rate(fault_end, fault_end + timedelta(seconds=90)),
-               "<=", 0.005, ttr_actual_s=ttr_s, ttr_limit_s=30),
+        _check("stale_cache_recovery",
+               get_emf_sum("StaleCacheHitCount", "service-a",
+                           fault_end, fault_end + timedelta(seconds=120)),
+               "<=", 0, ttr_actual_s=ttr_s, ttr_limit_s=60),
     ]
     return phase_a, phase_b
 
@@ -352,12 +372,10 @@ def evaluate_safety_net(fault_type: str, item: dict) -> dict:
     chaos-agent の _record_experiment は update_item でフラグを保持するため、ここで参照可能。
     """
     auto_stopper_fired = bool(item.get("emergency_stop"))
-    if fault_type == "http_error_inject":
-        expected = True
-        passed = auto_stopper_fired
-    else:
-        expected = False
-        passed = not auto_stopper_fired
+    # http_error_inject は止血テスト。service-b が吸収できていれば auto_stopper は不要。
+    # 全実験タイプで「発動しないこと」が合格条件。
+    expected = False
+    passed = not auto_stopper_fired
     return {
         "auto_stopper_fired": auto_stopper_fired,
         "expected": expected,

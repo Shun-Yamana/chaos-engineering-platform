@@ -228,6 +228,7 @@ class ChaosAgent:
             base["spec"]["port"] = 8000
             base["spec"]["path"] = "*"
             base["spec"]["abort"] = True
+            base["spec"]["percent"] = int(experiment.fault_rate * 100)
             base["spec"]["duration"] = f"{experiment.duration_seconds}s"
 
         return plural, base
