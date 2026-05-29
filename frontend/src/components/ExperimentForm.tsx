@@ -41,7 +41,7 @@ export function ExperimentForm({ onBack: _onBack, onStarted }: Props) {
     fault_type: "network_latency",
     duration: DEFAULT_DURATION["network_latency"],
     latency_ms: 500,
-    fault_rate: 0.5,
+    fault_rate: 1.0,
     error_rate_threshold: 0.05,
     burn_rate_threshold: 2.0,
   })
