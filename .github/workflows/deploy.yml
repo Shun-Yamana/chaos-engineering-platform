@@ -58,7 +58,10 @@ jobs:
             echo "Image $IMAGE already exists in ECR, skipping build."
           else
             docker build -t $IMAGE ${{ matrix.context }}
-            docker push $IMAGE
+            # push 失敗時: immutable タグが既に存在すれば成功扱い（並列実行での競合対策）
+            docker push $IMAGE || \
+              aws ecr describe-images --repository-name chaos-platform/${{ matrix.service }} \
+                --image-ids imageTag=${{ github.sha }} > /dev/null 2>&1
           fi
 
   deploy:
