@@ -1,6 +1,6 @@
 # ADR 094 - http_error_inject の fault injection を HTTPChaos から service-b 内蔵機構に移行
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-05-30
 
 ## Context

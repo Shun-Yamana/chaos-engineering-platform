@@ -279,7 +279,7 @@ resource "aws_iam_policy" "fis_execution" {
         Resource = "*"
       },
       {
-        # az_isolation: aws:network:disrupt-connectivity がルートテーブルを操作 (ADR 083)
+        # az_isolation: aws:network:disrupt-connectivity が Network ACL を操作 (ADR 083)
         Sid    = "AZIsolation"
         Effect = "Allow"
         Action = [
@@ -288,6 +288,15 @@ resource "aws_iam_policy" "fis_execution" {
           "ec2:CreateRoute",
           "ec2:DeleteRoute",
           "ec2:ReplaceRoute",
+          "ec2:DescribeNetworkAcls",
+          "ec2:CreateNetworkAcl",
+          "ec2:CreateNetworkAclEntry",
+          "ec2:DeleteNetworkAcl",
+          "ec2:DeleteNetworkAclEntry",
+          "ec2:ReplaceNetworkAclAssociation",
+          "ec2:ReplaceNetworkAclEntry",
+          "ec2:DescribeVpcs",
+          "ec2:CreateTags",
         ]
         Resource = "*"
       },

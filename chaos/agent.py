@@ -31,22 +31,15 @@ _CM_GROUP   = "chaos-mesh.org"
 _CM_VERSION = "v1alpha1"
 
 # fault_type → Chaos Mesh CRD plural name
+# http_error_inject は ADR 094 で Chaos Mesh から service-b 内蔵 FAULT_RATE に移行
 _CM_PLURAL = {
-    "pod_kill":         "podchaos",
-    "cpu_stress":       "stresschaos",
-    "memory_stress":    "stresschaos",
-    "network_latency":  "networkchaos",
-    "http_error_inject": "httpchaos",
+    "pod_kill":        "podchaos",
+    "cpu_stress":      "stresschaos",
+    "memory_stress":   "stresschaos",
+    "network_latency": "networkchaos",
 }
 
 _CM_FAULT_TYPES = frozenset(_CM_PLURAL.keys())
-
-# http_error_inject: experiment.service（上流）→ HTTPChaos ターゲット（下流）
-# service-a の防衛を試す → service-b の Response を abort
-_HTTP_CHAOS_TARGET = {
-    "service-a": "service-b",
-    "service-b": "service-c",
-}
 
 _FIS_TERMINAL_STATES = {"completed", "stopped", "failed"}
 
@@ -220,18 +213,6 @@ class ChaosAgent:
             base["spec"]["direction"] = "to"
             base["spec"]["duration"] = f"{experiment.duration_seconds}s"
 
-        elif experiment.fault_type == "http_error_inject":
-            target_svc = _HTTP_CHAOS_TARGET.get(experiment.service, experiment.service)
-            base["kind"] = "HTTPChaos"
-            base["spec"]["selector"]["labelSelectors"]["app"] = target_svc
-            base["spec"]["target"] = "Response"
-            base["spec"]["port"] = 8000
-            # /health を除外。/* だとヘルスチェックも abort され Pod が CrashLoop に入る
-            base["spec"]["path"] = "/reviews/*"
-            base["spec"]["abort"] = True
-            base["spec"]["percent"] = int(experiment.fault_rate * 100)
-            base["spec"]["duration"] = f"{experiment.duration_seconds}s"
-
         return plural, base
 
     def _cm_apply(self, plural: str, manifest: dict, namespace: str):
@@ -316,6 +297,64 @@ class ChaosAgent:
             logger.error(f"[{experiment.experiment_id}] emergency_cm_delete failed: {e}")
 
     # ---------------------------------------------------------------------------
+    # http_error_inject — service-b 内蔵 FAULT_RATE 注入 (ADR 094)
+    # ---------------------------------------------------------------------------
+
+    def _set_deployment_env(self, namespace: str, service: str, name: str, value: str):
+        """Deployment の env var を patch する（rolling update がトリガーされる）"""
+        deployment = self.apps_v1.read_namespaced_deployment(name=service, namespace=namespace)
+        for container in deployment.spec.template.spec.containers:
+            if container.name == service:
+                if container.env is None:
+                    container.env = []
+                container.env = [e for e in container.env if e.name != name]
+                container.env.append(client.V1EnvVar(name=name, value=value))
+                break
+        deployment.metadata.resource_version = None
+        self.apps_v1.patch_namespaced_deployment(name=service, namespace=namespace, body=deployment)
+
+    def _wait_rollout(self, namespace: str, service: str, timeout: int = 90) -> bool:
+        """rolling update が完了するまで待機（updated / ready / unavailable を確認）"""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            dep = self.apps_v1.read_namespaced_deployment(name=service, namespace=namespace)
+            spec_replicas = dep.spec.replicas or 1
+            s = dep.status
+            if (s.updated_replicas == spec_replicas
+                    and s.ready_replicas == spec_replicas
+                    and (s.unavailable_replicas or 0) == 0):
+                return True
+            time.sleep(5)
+        return False
+
+    def _http_error_inject_emergency_stop(self, namespace: str, experiment_id: str):
+        """FAULT_RATE=0.0 を即時復元（emergency_stop フラグ検知時 / 手動停止時）"""
+        try:
+            self._set_deployment_env(namespace, "service-b", "FAULT_RATE", "0.0")
+            logger.info(f"[{experiment_id}] emergency: FAULT_RATE=0.0 restored on service-b")
+        except Exception as e:
+            logger.error(f"[{experiment_id}] emergency: FAULT_RATE restore failed: {e}")
+
+    def _http_error_inject_run(self, experiment: Experiment):
+        """FAULT_RATE env var で service-b に障害注入し、duration 後に復元する (ADR 094)"""
+        namespace = experiment.namespace
+
+        self._set_deployment_env(namespace, "service-b", "FAULT_RATE", str(experiment.fault_rate))
+        logger.info(f"[{experiment.experiment_id}] FAULT_RATE={experiment.fault_rate} set on service-b, waiting rollout")
+
+        if not self._wait_rollout(namespace, "service-b", timeout=90):
+            logger.warning(f"[{experiment.experiment_id}] rollout not completed within 90s, continuing")
+
+        emergency_fn = lambda: self._http_error_inject_emergency_stop(namespace, experiment.experiment_id)
+        self._interruptible_sleep(experiment, experiment.duration_seconds, emergency_fn=emergency_fn)
+
+        self._set_deployment_env(namespace, "service-b", "FAULT_RATE", "0.0")
+        logger.info(f"[{experiment.experiment_id}] FAULT_RATE=0.0 restored on service-b, waiting rollout")
+
+        if not self._wait_rollout(namespace, "service-b", timeout=90):
+            logger.warning(f"[{experiment.experiment_id}] restore rollout not completed within 90s")
+
+    # ---------------------------------------------------------------------------
     # FIS — node_failure 用（将来実装: EC2 ノード終了）
     # ---------------------------------------------------------------------------
 
@@ -349,8 +388,11 @@ class ChaosAgent:
     # _interruptible_sleep: DynamoDB 停止フラグ監視付き待機
     # ---------------------------------------------------------------------------
 
-    def _interruptible_sleep(self, experiment: Experiment, seconds: int, check_interval: int = 5) -> bool:
-        """False を返した場合は外部停止。呼び出し元が cleanup する。"""
+    def _interruptible_sleep(self, experiment: Experiment, seconds: int,
+                              check_interval: int = 5, emergency_fn=None) -> bool:
+        """False を返した場合は外部停止。呼び出し元が cleanup する。
+        emergency_fn: emergency_stop フラグ検知時に呼ぶ関数。省略時は _cm_emergency_stop。
+        """
         table = dynamodb.Table(experiment.experiment_table)
         elapsed = 0
         _emergency_triggered = False
@@ -368,9 +410,10 @@ class ChaosAgent:
 
             if item.get("emergency_stop") and not _emergency_triggered:
                 _emergency_triggered = True
+                fn = emergency_fn if emergency_fn is not None else lambda: self._cm_emergency_stop(experiment)
                 threading.Thread(
-                    target=self._cm_emergency_stop, args=(experiment,),
-                    daemon=True, name=f"emergency-{experiment.experiment_id[:8]}",
+                    target=fn, daemon=True,
+                    name=f"emergency-{experiment.experiment_id[:8]}",
                 ).start()
 
         return True
@@ -389,6 +432,9 @@ class ChaosAgent:
 
             if experiment.fault_type in _CM_FAULT_TYPES:
                 self._cm_run(experiment)
+
+            elif experiment.fault_type == "http_error_inject":
+                self._http_error_inject_run(experiment)
 
             elif experiment.fault_type == "node_failure":
                 template_id = os.environ.get("FIS_TEMPLATE_NODE_FAILURE", "")
@@ -434,6 +480,8 @@ class ChaosAgent:
     def stop(self, experiment: Experiment, reason: str = "manual"):
         if experiment.fault_type in _CM_FAULT_TYPES:
             self._cm_emergency_stop(experiment)
+        elif experiment.fault_type == "http_error_inject":
+            self._http_error_inject_emergency_stop(experiment.namespace, experiment.experiment_id)
         elif experiment.fault_type in ("node_failure", "az_isolation"):
             fis_exp_id = self._active_fis.get(experiment.experiment_id)
             if fis_exp_id:
@@ -572,8 +620,10 @@ class ChaosAgentPoller:
                 if plural:
                     name = self._agent._cm_cr_name(experiment)
                     self._agent._cm_delete(plural, name, experiment.namespace)
+                elif experiment.fault_type == "http_error_inject":
+                    self._agent._set_deployment_env(experiment.namespace, "service-b", "FAULT_RATE", "0.0")
             except Exception as e:
-                logger.warning(f"[{eid}] CR cleanup failed (may not exist): {e}")
+                logger.warning(f"[{eid}] cleanup failed (may not exist): {e}")
             try:
                 self._table.update_item(
                     Key={"experiment_id": eid, "started_at": item["started_at"]},

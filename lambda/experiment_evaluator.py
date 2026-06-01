@@ -227,7 +227,7 @@ def _first_below_threshold(metric_fn, threshold: float, fault_end: datetime,
     return None
 
 
-def evaluate_pod_kill(fault_start: datetime, fault_end: datetime) -> tuple[list, list]:
+def evaluate_pod_kill(fault_start: datetime, fault_end: datetime) -> tuple[list, list, dict]:
     phase_a = [
         _check("error_rate_during_fault",
                get_alb_error_rate(fault_start, fault_end),
@@ -238,10 +238,18 @@ def evaluate_pod_kill(fault_start: datetime, fault_end: datetime) -> tuple[list,
         _check("error_rate_recovery", get_alb_error_rate(fault_end, fault_end + timedelta(seconds=90)),
                "<=", 0.005, ttr_actual_s=ttr_s, ttr_limit_s=60),
     ]
-    return phase_a, phase_b
+    stale_hits   = get_emf_sum("StaleCacheHitCount", "service-a", fault_start, fault_end)
+    fallback_cnt = get_emf_sum("FallbackCount",       "service-a", fault_start, fault_end)
+    cb_max       = get_emf_max("CircuitBreakerState", "service-a", fault_start, fault_end)
+    defense_evidence = {
+        "stale_cache_hit_count":  stale_hits,
+        "fallback_count":          fallback_cnt,
+        "circuit_breaker_opened":  (cb_max or 0) >= 1,
+    }
+    return phase_a, phase_b, defense_evidence
 
 
-def evaluate_cpu_stress(fault_start: datetime, fault_end: datetime) -> tuple[list, list]:
+def evaluate_cpu_stress(fault_start: datetime, fault_end: datetime) -> tuple[list, list, dict]:
     phase_a = [
         _check("p95_latency_ms", get_alb_p95_ms(fault_start, fault_end), "<=", 1000),
         _check("error_rate", get_alb_error_rate(fault_start, fault_end), "<=", 0.05),
@@ -256,10 +264,16 @@ def evaluate_cpu_stress(fault_start: datetime, fault_end: datetime) -> tuple[lis
                           fault_end + timedelta(seconds=180)),
                "<=", 500, ttr_actual_s=ttr_s, ttr_limit_s=120),
     ]
-    return phase_a, phase_b
+    cb_max     = get_emf_max("CircuitBreakerState", "service-a", fault_start, fault_end)
+    stale_hits = get_emf_sum("StaleCacheHitCount",  "service-a", fault_start, fault_end)
+    defense_evidence = {
+        "circuit_breaker_opened": (cb_max or 0) >= 1,
+        "stale_cache_hit_count":  stale_hits,
+    }
+    return phase_a, phase_b, defense_evidence
 
 
-def evaluate_memory_stress(fault_start: datetime, fault_end: datetime) -> tuple[list, list]:
+def evaluate_memory_stress(fault_start: datetime, fault_end: datetime) -> tuple[list, list, dict]:
     restarts_delta = get_container_restarts_delta("service-b", "default", fault_start, fault_end)
     phase_a = [
         _check("error_rate", get_alb_error_rate(fault_start, fault_end), "<=", 0.05),
@@ -273,50 +287,62 @@ def evaluate_memory_stress(fault_start: datetime, fault_end: datetime) -> tuple[
                get_alb_error_rate(fault_end, fault_end + timedelta(seconds=90)),
                "<=", 0.005, ttr_actual_s=ttr_s, ttr_limit_s=30),
     ]
-    return phase_a, phase_b
+    stale_hits = get_emf_sum("StaleCacheHitCount", "service-a", fault_start, fault_end)
+    defense_evidence = {
+        "stale_cache_hit_count": stale_hits,
+    }
+    return phase_a, phase_b, defense_evidence
 
 
-def evaluate_http_error_inject(item: dict, fault_start: datetime, fault_end: datetime) -> tuple[list, list]:
-    # service-a の EMF を使う。
-    # HTTPChaos → service-c abort → service-b がキャッシュ応答
-    # → service-a は product_source=stale_cache を検出して StaleCacheHitCount を記録。
-    # traffic-generator が ALB をバイパスするため ALB エラーレートは常に 0 になる (ADR 090)。
-    # service-c abort → service-b が reviews=null を返す → service-a が ReviewsUnavailableCount を発火
-    reviews_unavail = get_emf_sum("ReviewsUnavailableCount", "service-a", fault_start, fault_end)
-    cascade_rate    = get_alb_error_rate(fault_start, fault_end)
+def evaluate_http_error_inject(fault_start: datetime, fault_end: datetime) -> tuple[list, list, dict]:
+    # ADR 094: FAULT_RATE on service-b → service-a が CB + stale cache + fallback で防衛
+    # traffic-generator は /aggregate/products/{pid} を呼ぶため FallbackCount / StaleCacheHitCount が発火
+    fallback_cnt = get_emf_sum("FallbackCount",       "service-a", fault_start, fault_end)
+    stale_hits   = get_emf_sum("StaleCacheHitCount",  "service-a", fault_start, fault_end)
+    cb_max       = get_emf_max("CircuitBreakerState", "service-a", fault_start, fault_end)
 
     phase_a = [
-        # reviews が null になっていること（service-c 障害が service-a まで観測できる）
-        _check("reviews_unavailable_count", reviews_unavail, ">=", 1),
-        # カスケード障害が起きていないこと（エンドユーザーへの HTTP エラーなし）
-        _check("cascade_error_rate", cascade_rate, "<=", 0.05),
+        # service-a が防衛発動した証拠（FallbackCount + StaleCacheHitCount のどちらか発火）
+        _check("defense_fired", fallback_cnt + stale_hits, ">=", 1),
     ]
 
-    # Phase B: HTTPChaos 削除後に reviews が復活すること（service-c 回復）
-    ttr_s = _first_below_threshold(
-        lambda s, e: get_emf_sum("ReviewsUnavailableCount", "service-a", s, e),
-        0.5,  # 0 件（< 0.5）を「回復」とみなす
-        fault_end, 120,
-    )
+    # Phase B: FAULT_RATE=0.0 + rolling restart (~90s) + CB half-open (30s) を考慮して 120s offset
+    recovery_start = fault_end + timedelta(seconds=120)
+    recovery_end   = fault_end + timedelta(seconds=240)
+    fallback_after = get_emf_sum("FallbackCount",      "service-a", recovery_start, recovery_end)
+    stale_after    = get_emf_sum("StaleCacheHitCount", "service-a", recovery_start, recovery_end)
+
+    def _defense_fn(s, e):
+        return (get_emf_sum("FallbackCount",      "service-a", s, e) +
+                get_emf_sum("StaleCacheHitCount", "service-a", s, e))
+
+    ttr_s = _first_below_threshold(_defense_fn, 0.5, fault_end, 300)
     phase_b = [
-        _check("reviews_recovery",
-               get_emf_sum("ReviewsUnavailableCount", "service-a",
-                           fault_end, fault_end + timedelta(seconds=120)),
-               "<=", 0, ttr_actual_s=ttr_s, ttr_limit_s=60),
+        _check("defense_deactivated",
+               fallback_after + stale_after, "<=", 0,
+               ttr_actual_s=ttr_s, ttr_limit_s=180),
     ]
-    return phase_a, phase_b
+    defense_evidence = {
+        "fallback_count":         fallback_cnt,
+        "stale_cache_hit_count":  stale_hits,
+        "circuit_breaker_opened": (cb_max or 0) >= 1,
+    }
+    return phase_a, phase_b, defense_evidence
 
 
-def evaluate_network_latency(fault_start: datetime, fault_end: datetime) -> tuple[list, list]:
+def evaluate_network_latency(fault_start: datetime, fault_end: datetime) -> tuple[list, list, dict]:
     service_b_p95 = get_emf_p95_ms("ResponseTimeMs", "service-b", fault_start, fault_end)
     service_a_p95 = get_emf_p95_ms("AggregateDurationMs", "service-a", fault_start, fault_end)
     # fallback: ALB P95 as proxy for service-b if EMF not available
     if service_b_p95 is None:
         service_b_p95 = get_alb_p95_ms(fault_start, fault_end)
 
+    stale_hits = get_emf_sum("StaleCacheHitCount", "service-a", fault_start, fault_end)
     phase_a = [
         _check("service_b_p95_ms", service_b_p95, ">=", 450),
         _check("service_a_p95_ms", service_a_p95, "<=", 250),
+        # 500ms 注入 + 200ms Envoy timeout で stale cache 発火は決定論的 (ADR 095)
+        _check("stale_cache_fired", stale_hits, ">=", 1),
     ]
 
     def service_a_p95_fn(s, e):
@@ -329,10 +355,15 @@ def evaluate_network_latency(fault_start: datetime, fault_end: datetime) -> tupl
                service_a_p95_fn(fault_end, fault_end + timedelta(seconds=90)),
                "<=", 250, ttr_actual_s=ttr_s, ttr_limit_s=30),
     ]
-    return phase_a, phase_b
+    cb_max = get_emf_max("CircuitBreakerState", "service-a", fault_start, fault_end)
+    defense_evidence = {
+        "stale_cache_hit_count":  stale_hits,
+        "circuit_breaker_opened": (cb_max or 0) >= 1,
+    }
+    return phase_a, phase_b, defense_evidence
 
 
-def evaluate_node_failure(fault_start: datetime, fault_end: datetime) -> tuple[list, list]:
+def evaluate_node_failure(fault_start: datetime, fault_end: datetime) -> tuple[list, list, dict]:
     phase_a = [
         # EC2 ノード終了直後 PDB + replicas で大半のリクエストを吸収 (ADR 080)
         _check("error_rate_during_fault",
@@ -344,10 +375,14 @@ def evaluate_node_failure(fault_start: datetime, fault_end: datetime) -> tuple[l
                get_alb_error_rate(fault_end, fault_end + timedelta(seconds=300)),
                "<=", 0.01, ttr_actual_s=ttr_s, ttr_limit_s=300),
     ]
-    return phase_a, phase_b
+    restarts_delta = get_container_restarts_delta("service-b", "default", fault_start, fault_end)
+    defense_evidence = {
+        "container_restarts_delta": restarts_delta,
+    }
+    return phase_a, phase_b, defense_evidence
 
 
-def evaluate_az_isolation(fault_start: datetime, fault_end: datetime) -> tuple[list, list]:
+def evaluate_az_isolation(fault_start: datetime, fault_end: datetime) -> tuple[list, list, dict]:
     phase_a = [
         # ALB が 10s で AZ-1a Pod を deregister → 1c 側に集約 (ADR 083)
         _check("error_rate_during_fault",
@@ -360,7 +395,9 @@ def evaluate_az_isolation(fault_start: datetime, fault_end: datetime) -> tuple[l
                get_alb_error_rate(fault_end, fault_end + timedelta(seconds=90)),
                "<=", 0.01, ttr_actual_s=ttr_s, ttr_limit_s=30),
     ]
-    return phase_a, phase_b
+    # インフラ層防衛（ALB AZ failover）が主。アプリ層発火は副次的。可視化は X-Ray で担う (ADR 095)
+    defense_evidence: dict = {}
+    return phase_a, phase_b, defense_evidence
 
 
 # ---------------------------------------------------------------------------
@@ -401,19 +438,19 @@ def evaluate(item: dict) -> dict:
         fault_end = fault_start + timedelta(seconds=int(item["duration_seconds"]))
 
     if fault_type == "pod_kill":
-        phase_a, phase_b = evaluate_pod_kill(fault_start, fault_end)
+        phase_a, phase_b, defense_evidence = evaluate_pod_kill(fault_start, fault_end)
     elif fault_type == "cpu_stress":
-        phase_a, phase_b = evaluate_cpu_stress(fault_start, fault_end)
+        phase_a, phase_b, defense_evidence = evaluate_cpu_stress(fault_start, fault_end)
     elif fault_type == "memory_stress":
-        phase_a, phase_b = evaluate_memory_stress(fault_start, fault_end)
+        phase_a, phase_b, defense_evidence = evaluate_memory_stress(fault_start, fault_end)
     elif fault_type == "http_error_inject":
-        phase_a, phase_b = evaluate_http_error_inject(item, fault_start, fault_end)
+        phase_a, phase_b, defense_evidence = evaluate_http_error_inject(fault_start, fault_end)
     elif fault_type == "network_latency":
-        phase_a, phase_b = evaluate_network_latency(fault_start, fault_end)
+        phase_a, phase_b, defense_evidence = evaluate_network_latency(fault_start, fault_end)
     elif fault_type == "node_failure":
-        phase_a, phase_b = evaluate_node_failure(fault_start, fault_end)
+        phase_a, phase_b, defense_evidence = evaluate_node_failure(fault_start, fault_end)
     elif fault_type == "az_isolation":
-        phase_a, phase_b = evaluate_az_isolation(fault_start, fault_end)
+        phase_a, phase_b, defense_evidence = evaluate_az_isolation(fault_start, fault_end)
     else:
         logger.warning(f"Unknown fault_type: {fault_type}")
         return {}
@@ -431,9 +468,26 @@ def evaluate(item: dict) -> dict:
             "phase_a_absorption": phase_a,
             "phase_b_recovery": phase_b,
             "safety_net": safety_net,
+            "defense_evidence": defense_evidence,
         },
         "evaluated_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+def _defense_evidence_text(evidence: dict) -> str:
+    if not evidence:
+        return "—"
+    lines = []
+    for key, val in evidence.items():
+        label = key.replace("_", " ")
+        if isinstance(val, bool):
+            icon = "✅" if val else "➖"
+            lines.append(f"{icon} {label}")
+        elif val is None:
+            lines.append(f"➖ {label}: no data")
+        else:
+            lines.append(f"📊 {label}: `{val:.0f}`")
+    return "\n".join(lines)
 
 
 def _criterion_line(c: dict) -> str:
@@ -474,6 +528,9 @@ def post_slack_report(item: dict, result: dict):
     expected   = "yes" if safety_net.get("expected") else "no"
     sn_line    = f"{sn_icon} auto_stopper: {fired}  (expected: {expected})"
 
+    defense_evidence = details.get("defense_evidence", {})
+    de_text          = _defense_evidence_text(defense_evidence)
+
     evaluated_at = result.get("evaluated_at", "")[:19].replace("T", " ") + " UTC"
 
     payload = {
@@ -506,6 +563,10 @@ def post_slack_report(item: dict, result: dict):
                     {
                         "type": "section",
                         "text": {"type": "mrkdwn", "text": f"*Safety Net*\n{sn_line}"},
+                    },
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": f"*Defense Evidence*\n{de_text}"},
                     },
                     {
                         "type": "context",

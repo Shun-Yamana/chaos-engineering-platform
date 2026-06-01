@@ -1,214 +1,129 @@
-<mxGraphModel dx="1422" dy="762" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="780" math="0" shadow="0">
-  <root>
-    <mxCell id="0"/>
-    <mxCell id="1" parent="0"/>
-
-    <!-- TITLE -->
-    <mxCell id="title" value="Chaos Engineering — サービストポロジーと攻撃影響マップ"
-      style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;fontSize=17;fontStyle=1;"
-      vertex="1" parent="1">
-      <mxGeometry x="100" y="15" width="1100" height="40" as="geometry"/>
-    </mxCell>
-
-    <!-- JMeter -->
-    <mxCell id="jmeter" value="&lt;b&gt;JMeter&lt;/b&gt;&lt;br&gt;20 req/s (通常)"
-      style="rounded=1;whiteSpace=wrap;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;"
-      vertex="1" parent="1">
-      <mxGeometry x="40" y="145" width="120" height="70" as="geometry"/>
-    </mxCell>
-
-    <!-- service-a box -->
-    <mxCell id="sva" value="&lt;b&gt;service-a&lt;/b&gt;"
-      style="rounded=1;fillColor=#dae8fc;strokeColor=#6c8ebf;strokeWidth=2;verticalAlign=top;fontSize=13;"
-      vertex="1" parent="1">
-      <mxGeometry x="220" y="110" width="165" height="135" as="geometry"/>
-    </mxCell>
-
-    <!-- Envoy on service-a -->
-    <mxCell id="envoy_a" value="Envoy :9001&lt;br&gt;&lt;i&gt;a→b 障害注入&lt;/i&gt;"
-      style="rounded=1;fillColor=#ffe6cc;strokeColor=#d6b656;fontSize=11;"
-      vertex="1" parent="1">
-      <mxGeometry x="235" y="175" width="135" height="55" as="geometry"/>
-    </mxCell>
-
-    <!-- service-b box -->
-    <mxCell id="svb" value="&lt;b&gt;service-b&lt;/b&gt;"
-      style="rounded=1;fillColor=#dae8fc;strokeColor=#6c8ebf;strokeWidth=2;verticalAlign=top;fontSize=13;"
-      vertex="1" parent="1">
-      <mxGeometry x="480" y="110" width="165" height="135" as="geometry"/>
-    </mxCell>
-
-    <!-- Envoy on service-b -->
-    <mxCell id="envoy_b" value="Envoy :9002&lt;br&gt;&lt;i&gt;b→c 障害注入&lt;/i&gt;"
-      style="rounded=1;fillColor=#ffe6cc;strokeColor=#d6b656;fontSize=11;"
-      vertex="1" parent="1">
-      <mxGeometry x="495" y="175" width="135" height="55" as="geometry"/>
-    </mxCell>
-
-    <!-- service-c -->
-    <mxCell id="svc" value="&lt;b&gt;service-c&lt;/b&gt;&lt;br&gt;reviews / recommend&lt;br&gt;&lt;font color='#6c8ebf'&gt;&lt;i&gt;非クリティカル&lt;/i&gt;&lt;/font&gt;"
-      style="rounded=1;whiteSpace=wrap;fillColor=#dae8fc;strokeColor=#6c8ebf;strokeWidth=2;fontSize=12;"
-      vertex="1" parent="1">
-      <mxGeometry x="750" y="90" width="155" height="85" as="geometry"/>
-    </mxCell>
-
-    <!-- service-d -->
-    <mxCell id="svd" value="&lt;b&gt;service-d&lt;/b&gt;&lt;br&gt;products&lt;br&gt;&lt;font color='#b85450'&gt;&lt;i&gt;クリティカル&lt;/i&gt;&lt;/font&gt;"
-      style="rounded=1;whiteSpace=wrap;fillColor=#dae8fc;strokeColor=#6c8ebf;strokeWidth=2;fontSize=12;"
-      vertex="1" parent="1">
-      <mxGeometry x="750" y="215" width="155" height="80" as="geometry"/>
-    </mxCell>
-
-    <!-- TOPOLOGY EDGES -->
-    <mxCell id="e_jm_a" value="トラフィック"
-      style="edgeStyle=orthogonalEdgeStyle;strokeWidth=2;strokeColor=#82b366;"
-      edge="1" source="jmeter" target="sva" parent="1">
-      <mxGeometry relative="1" as="geometry"/>
-    </mxCell>
-
-    <mxCell id="e_a_b" value="port 9001"
-      style="edgeStyle=orthogonalEdgeStyle;strokeWidth=2;strokeColor=#d6b656;"
-      edge="1" source="envoy_a" target="svb" parent="1">
-      <mxGeometry relative="1" as="geometry"/>
-    </mxCell>
-
-    <mxCell id="e_b_c" value="port 9002"
-      style="edgeStyle=orthogonalEdgeStyle;strokeWidth=2;strokeColor=#d6b656;"
-      edge="1" source="envoy_b" target="svc" parent="1">
-      <mxGeometry relative="1" as="geometry"/>
-    </mxCell>
-
-    <mxCell id="e_a_d" value="直接"
-      style="edgeStyle=orthogonalEdgeStyle;strokeWidth=2;strokeColor=#6c8ebf;"
-      edge="1" source="sva" target="svd" parent="1">
-      <mxGeometry relative="1" as="geometry"/>
-    </mxCell>
-
-    <!-- b×5 ATTACK ZONE -->
-    <mxCell id="b_zone" value="b × 5 実験"
-      style="swimlane;fillColor=#f8cecc;strokeColor=#b85450;fontStyle=1;fontSize=14;startSize=35;"
-      vertex="1" parent="1">
-      <mxGeometry x="400" y="320" width="275" height="310" as="geometry"/>
-    </mxCell>
-
-    <mxCell id="b_fis_t" value="▌ FIS（インフラ層）— service-b 直撃"
-      style="text;html=1;fontStyle=1;fontSize=11;align=left;"
-      vertex="1" parent="b_zone">
-      <mxGeometry x="8" y="42" width="258" height="18" as="geometry"/>
-    </mxCell>
-    <mxCell id="b_fis_items" value="① pod_kill ─ Pod を強制削除&lt;br&gt;② cpu_stress ─ CPU 80% に固定&lt;br&gt;③ memory_stress ─ メモリを枯渇"
-      style="text;html=1;align=left;fontSize=11;spacingLeft=12;"
-      vertex="1" parent="b_zone">
-      <mxGeometry x="8" y="62" width="258" height="62" as="geometry"/>
-    </mxCell>
-
-    <mxCell id="b_envoy_t" value="▌ Envoy（アプリ層）— a→b パス"
-      style="text;html=1;fontStyle=1;fontSize=11;align=left;"
-      vertex="1" parent="b_zone">
-      <mxGeometry x="8" y="132" width="258" height="18" as="geometry"/>
-    </mxCell>
-    <mxCell id="b_envoy_items" value="④ network_latency ─ a→b に遅延注入&lt;br&gt;⑤ http_error_inject ─ a→b に 5xx 注入"
-      style="text;html=1;align=left;fontSize=11;spacingLeft=12;"
-      vertex="1" parent="b_zone">
-      <mxGeometry x="8" y="152" width="258" height="45" as="geometry"/>
-    </mxCell>
-
-    <mxCell id="b_sep" value=""
-      style="line;strokeColor=#b85450;"
-      vertex="1" parent="b_zone">
-      <mxGeometry x="8" y="205" width="258" height="10" as="geometry"/>
-    </mxCell>
-
-    <mxCell id="b_impact" value="⚠ 影響：a の SLO 違反&lt;br&gt;カスケード障害 b → a&lt;br&gt;→ Grafana アラート → emergency_stop"
-      style="text;html=1;align=left;fontSize=11;fontColor=#b85450;fontStyle=1;spacingLeft=8;"
-      vertex="1" parent="b_zone">
-      <mxGeometry x="8" y="218" width="258" height="70" as="geometry"/>
-    </mxCell>
-
-    <!-- c×5 ATTACK ZONE -->
-    <mxCell id="c_zone" value="c × 5 実験"
-      style="swimlane;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;fontSize=14;startSize=35;"
-      vertex="1" parent="1">
-      <mxGeometry x="720" y="320" width="275" height="310" as="geometry"/>
-    </mxCell>
-
-    <mxCell id="c_fis_t" value="▌ FIS（インフラ層）— service-c 直撃"
-      style="text;html=1;fontStyle=1;fontSize=11;align=left;"
-      vertex="1" parent="c_zone">
-      <mxGeometry x="8" y="42" width="258" height="18" as="geometry"/>
-    </mxCell>
-    <mxCell id="c_fis_items" value="⑥ pod_kill ─ Pod を強制削除&lt;br&gt;⑦ cpu_stress ─ CPU 80% に固定&lt;br&gt;⑧ memory_stress ─ メモリを枯渇"
-      style="text;html=1;align=left;fontSize=11;spacingLeft=12;"
-      vertex="1" parent="c_zone">
-      <mxGeometry x="8" y="62" width="258" height="62" as="geometry"/>
-    </mxCell>
-
-    <mxCell id="c_envoy_t" value="▌ Envoy（アプリ層）— b→c パス"
-      style="text;html=1;fontStyle=1;fontSize=11;align=left;"
-      vertex="1" parent="c_zone">
-      <mxGeometry x="8" y="132" width="258" height="18" as="geometry"/>
-    </mxCell>
-    <mxCell id="c_envoy_items" value="⑨ network_latency ─ b→c に遅延注入&lt;br&gt;⑩ http_error_inject ─ b→c に 5xx 注入"
-      style="text;html=1;align=left;fontSize=11;spacingLeft=12;"
-      vertex="1" parent="c_zone">
-      <mxGeometry x="8" y="152" width="258" height="45" as="geometry"/>
-    </mxCell>
-
-    <mxCell id="c_sep" value=""
-      style="line;strokeColor=#d6b656;"
-      vertex="1" parent="c_zone">
-      <mxGeometry x="8" y="205" width="258" height="10" as="geometry"/>
-    </mxCell>
-
-    <mxCell id="c_impact" value="✓ 影響：b が部分劣化のみ&lt;br&gt;reviews=null で 200 返却&lt;br&gt;→ a の SLO は維持（graceful degradation）"
-      style="text;html=1;align=left;fontSize=11;fontColor=#0050ef;fontStyle=1;spacingLeft=8;"
-      vertex="1" parent="c_zone">
-      <mxGeometry x="8" y="218" width="258" height="70" as="geometry"/>
-    </mxCell>
-
-    <!-- ATTACK ARROWS -->
-    <mxCell id="arr_b"
-      style="edgeStyle=orthogonalEdgeStyle;strokeColor=#b85450;strokeWidth=2;dashed=1;endArrow=block;endFill=1;fillColor=#b85450;"
-      edge="1" source="b_zone" target="svb" parent="1">
-      <mxGeometry relative="1" as="geometry"/>
-    </mxCell>
-
-    <mxCell id="arr_c"
-      style="edgeStyle=orthogonalEdgeStyle;strokeColor=#d6b656;strokeWidth=2;dashed=1;endArrow=block;endFill=1;fillColor=#d6b656;"
-      edge="1" source="c_zone" target="svc" parent="1">
-      <mxGeometry relative="1" as="geometry"/>
-    </mxCell>
-
-    <!-- LEGEND -->
-    <mxCell id="legend" value="凡例"
-      style="swimlane;fillColor=#f5f5f5;strokeColor=#666666;fontStyle=1;fontSize=12;startSize=30;"
-      vertex="1" parent="1">
-      <mxGeometry x="30" y="355" width="320" height="160" as="geometry"/>
-    </mxCell>
-    <mxCell id="lg1" value="" style="rounded=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="legend">
-      <mxGeometry x="10" y="38" width="18" height="18" as="geometry"/>
-    </mxCell>
-    <mxCell id="lg1t" value="マイクロサービス" style="text;fontSize=11;align=left;" vertex="1" parent="legend">
-      <mxGeometry x="35" y="38" width="270" height="18" as="geometry"/>
-    </mxCell>
-    <mxCell id="lg2" value="" style="rounded=1;fillColor=#ffe6cc;strokeColor=#d6b656;" vertex="1" parent="legend">
-      <mxGeometry x="10" y="63" width="18" height="18" as="geometry"/>
-    </mxCell>
-    <mxCell id="lg2t" value="Envoy サイドカー（障害注入プロキシ）" style="text;fontSize=11;align=left;" vertex="1" parent="legend">
-      <mxGeometry x="35" y="63" width="270" height="18" as="geometry"/>
-    </mxCell>
-    <mxCell id="lg3" value="" style="rounded=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="legend">
-      <mxGeometry x="10" y="88" width="18" height="18" as="geometry"/>
-    </mxCell>
-    <mxCell id="lg3t" value="b×5 実験（SLO 違反・カスケード障害）" style="text;fontSize=11;align=left;" vertex="1" parent="legend">
-      <mxGeometry x="35" y="88" width="270" height="18" as="geometry"/>
-    </mxCell>
-    <mxCell id="lg4" value="" style="rounded=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="legend">
-      <mxGeometry x="10" y="113" width="18" height="18" as="geometry"/>
-    </mxCell>
-    <mxCell id="lg4t" value="c×5 実験（部分劣化・graceful degradation）" style="text;fontSize=11;align=left;" vertex="1" parent="legend">
-      <mxGeometry x="35" y="113" width="270" height="18" as="geometry"/>
-    </mxCell>
-
-  </root>
-</mxGraphModel>
+<mxfile host="Electron">
+  <diagram id="c4yDpsz9VZJ9AK1nWXOE" name="ページ-1">
+    <mxGraphModel dx="1165" dy="749" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="780" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="title" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;fontSize=17;fontStyle=1;" value="Chaos Engineering — サービストポロジーと攻撃影響マップ" vertex="1">
+          <mxGeometry height="40" width="1100" x="100" y="15" as="geometry" />
+        </mxCell>
+        <mxCell id="jmeter" parent="1" style="rounded=1;whiteSpace=wrap;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" value="&lt;b&gt;JMeter&lt;/b&gt;&lt;br&gt;20 req/s (通常)" vertex="1">
+          <mxGeometry height="70" width="120" x="40" y="145" as="geometry" />
+        </mxCell>
+        <mxCell id="sva" parent="1" style="rounded=1;fillColor=#dae8fc;strokeColor=#6c8ebf;strokeWidth=2;verticalAlign=top;fontSize=13;" value="&lt;b&gt;service-a&lt;/b&gt;" vertex="1">
+          <mxGeometry height="135" width="165" x="220" y="110" as="geometry" />
+        </mxCell>
+        <mxCell id="envoy_a" parent="1" style="rounded=1;fillColor=#ffe6cc;strokeColor=#d6b656;fontSize=11;" value="Envoy :9001&lt;br&gt;&lt;i&gt;a→b 障害注入&lt;/i&gt;" vertex="1">
+          <mxGeometry height="55" width="135" x="235" y="175" as="geometry" />
+        </mxCell>
+        <mxCell id="svb" parent="1" style="rounded=1;fillColor=#dae8fc;strokeColor=#6c8ebf;strokeWidth=2;verticalAlign=top;fontSize=13;" value="&lt;b&gt;service-b&lt;/b&gt;" vertex="1">
+          <mxGeometry height="135" width="165" x="480" y="110" as="geometry" />
+        </mxCell>
+        <mxCell id="envoy_b" parent="1" style="rounded=1;fillColor=#ffe6cc;strokeColor=#d6b656;fontSize=11;" value="Envoy :9002&lt;br&gt;&lt;i&gt;b→c 障害注入&lt;/i&gt;" vertex="1">
+          <mxGeometry height="55" width="135" x="495" y="175" as="geometry" />
+        </mxCell>
+        <mxCell id="svc" parent="1" style="rounded=1;whiteSpace=wrap;fillColor=#dae8fc;strokeColor=#6c8ebf;strokeWidth=2;fontSize=12;" value="&lt;b&gt;service-c&lt;/b&gt;&lt;br&gt;reviews / recommend&lt;br&gt;&lt;font color=&#39;#6c8ebf&#39;&gt;&lt;i&gt;非クリティカル&lt;/i&gt;&lt;/font&gt;" vertex="1">
+          <mxGeometry height="85" width="155" x="750" y="90" as="geometry" />
+        </mxCell>
+        <mxCell id="svd" parent="1" style="rounded=1;whiteSpace=wrap;fillColor=#dae8fc;strokeColor=#6c8ebf;strokeWidth=2;fontSize=12;" value="&lt;b&gt;service-d&lt;/b&gt;&lt;br&gt;products&lt;br&gt;&lt;font color=&#39;#b85450&#39;&gt;&lt;i&gt;クリティカル&lt;/i&gt;&lt;/font&gt;" vertex="1">
+          <mxGeometry height="80" width="155" x="750" y="215" as="geometry" />
+        </mxCell>
+        <mxCell id="e_jm_a" edge="1" parent="1" source="jmeter" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=2;strokeColor=#82b366;" target="sva" value="トラフィック">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_a_b" edge="1" parent="1" source="envoy_a" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=2;strokeColor=#d6b656;" target="svb" value="port 9001">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_b_c" edge="1" parent="1" source="envoy_b" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=2;strokeColor=#d6b656;" target="svc" value="port 9002">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_a_d" edge="1" parent="1" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=2;strokeColor=#6c8ebf;" value="直接">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="380" y="190" />
+              <mxPoint x="563" y="190" />
+              <mxPoint x="563" y="263" />
+            </Array>
+            <mxPoint x="380" y="160.0000000000001" as="sourcePoint" />
+            <mxPoint x="745" y="262.5000000000001" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="b_zone" parent="1" style="swimlane;fillColor=#f8cecc;strokeColor=#b85450;fontStyle=1;fontSize=14;startSize=35;" value="b × 5 実験" vertex="1">
+          <mxGeometry height="310" width="275" x="400" y="320" as="geometry" />
+        </mxCell>
+        <mxCell id="b_fis_t" parent="b_zone" style="text;html=1;fontStyle=1;fontSize=11;align=left;" value="▌ FIS（インフラ層）— service-b 直撃" vertex="1">
+          <mxGeometry height="18" width="258" x="8" y="42" as="geometry" />
+        </mxCell>
+        <mxCell id="b_fis_items" parent="b_zone" style="text;html=1;align=left;fontSize=11;spacingLeft=12;" value="① pod_kill ─ Pod を強制削除&lt;br&gt;② cpu_stress ─ CPU 80% に固定&lt;br&gt;③ memory_stress ─ メモリを枯渇" vertex="1">
+          <mxGeometry height="62" width="258" x="8" y="62" as="geometry" />
+        </mxCell>
+        <mxCell id="b_envoy_t" parent="b_zone" style="text;html=1;fontStyle=1;fontSize=11;align=left;" value="▌ Envoy（アプリ層）— a→b パス" vertex="1">
+          <mxGeometry height="18" width="258" x="8" y="132" as="geometry" />
+        </mxCell>
+        <mxCell id="b_envoy_items" parent="b_zone" style="text;html=1;align=left;fontSize=11;spacingLeft=12;" value="④ network_latency ─ a→b に遅延注入&lt;br&gt;⑤ http_error_inject ─ a→b に 5xx 注入" vertex="1">
+          <mxGeometry height="45" width="258" x="8" y="152" as="geometry" />
+        </mxCell>
+        <mxCell id="b_sep" parent="b_zone" style="line;strokeColor=#b85450;" value="" vertex="1">
+          <mxGeometry height="10" width="258" x="8" y="205" as="geometry" />
+        </mxCell>
+        <mxCell id="b_impact" parent="b_zone" style="text;html=1;align=left;fontSize=11;fontColor=#b85450;fontStyle=1;spacingLeft=8;" value="⚠ 影響：a の SLO 違反&lt;br&gt;カスケード障害 b → a&lt;br&gt;→ Grafana アラート → emergency_stop" vertex="1">
+          <mxGeometry height="70" width="258" x="8" y="218" as="geometry" />
+        </mxCell>
+        <mxCell id="c_zone" parent="1" style="swimlane;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;fontSize=14;startSize=35;" value="c × 5 実験" vertex="1">
+          <mxGeometry height="310" width="275" x="720" y="320" as="geometry" />
+        </mxCell>
+        <mxCell id="c_fis_t" parent="c_zone" style="text;html=1;fontStyle=1;fontSize=11;align=left;" value="▌ FIS（インフラ層）— service-c 直撃" vertex="1">
+          <mxGeometry height="18" width="258" x="8" y="42" as="geometry" />
+        </mxCell>
+        <mxCell id="c_fis_items" parent="c_zone" style="text;html=1;align=left;fontSize=11;spacingLeft=12;" value="⑥ pod_kill ─ Pod を強制削除&lt;br&gt;⑦ cpu_stress ─ CPU 80% に固定&lt;br&gt;⑧ memory_stress ─ メモリを枯渇" vertex="1">
+          <mxGeometry height="62" width="258" x="8" y="62" as="geometry" />
+        </mxCell>
+        <mxCell id="c_envoy_t" parent="c_zone" style="text;html=1;fontStyle=1;fontSize=11;align=left;" value="▌ Envoy（アプリ層）— b→c パス" vertex="1">
+          <mxGeometry height="18" width="258" x="8" y="132" as="geometry" />
+        </mxCell>
+        <mxCell id="c_envoy_items" parent="c_zone" style="text;html=1;align=left;fontSize=11;spacingLeft=12;" value="⑨ network_latency ─ b→c に遅延注入&lt;br&gt;⑩ http_error_inject ─ b→c に 5xx 注入" vertex="1">
+          <mxGeometry height="45" width="258" x="8" y="152" as="geometry" />
+        </mxCell>
+        <mxCell id="c_sep" parent="c_zone" style="line;strokeColor=#d6b656;" value="" vertex="1">
+          <mxGeometry height="10" width="258" x="8" y="205" as="geometry" />
+        </mxCell>
+        <mxCell id="c_impact" parent="c_zone" style="text;html=1;align=left;fontSize=11;fontColor=#0050ef;fontStyle=1;spacingLeft=8;" value="✓ 影響：b が部分劣化のみ&lt;br&gt;reviews=null で 200 返却&lt;br&gt;→ a の SLO は維持（graceful degradation）" vertex="1">
+          <mxGeometry height="70" width="258" x="8" y="218" as="geometry" />
+        </mxCell>
+        <mxCell id="arr_b" edge="1" parent="1" source="b_zone" style="edgeStyle=orthogonalEdgeStyle;strokeColor=#b85450;strokeWidth=2;dashed=1;endArrow=block;endFill=1;fillColor=#b85450;" target="svb">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arr_c" edge="1" parent="1" source="c_zone" style="edgeStyle=orthogonalEdgeStyle;strokeColor=#d6b656;strokeWidth=2;dashed=1;endArrow=block;endFill=1;fillColor=#d6b656;" target="svc">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="legend" parent="1" style="swimlane;fillColor=#f5f5f5;strokeColor=#666666;fontStyle=1;fontSize=12;startSize=30;" value="凡例" vertex="1">
+          <mxGeometry height="160" width="320" x="30" y="355" as="geometry" />
+        </mxCell>
+        <mxCell id="lg1" parent="legend" style="rounded=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="" vertex="1">
+          <mxGeometry height="18" width="18" x="10" y="38" as="geometry" />
+        </mxCell>
+        <mxCell id="lg1t" parent="legend" style="text;fontSize=11;align=left;" value="マイクロサービス" vertex="1">
+          <mxGeometry height="18" width="270" x="35" y="38" as="geometry" />
+        </mxCell>
+        <mxCell id="lg2" parent="legend" style="rounded=1;fillColor=#ffe6cc;strokeColor=#d6b656;" value="" vertex="1">
+          <mxGeometry height="18" width="18" x="10" y="63" as="geometry" />
+        </mxCell>
+        <mxCell id="lg2t" parent="legend" style="text;fontSize=11;align=left;" value="Envoy サイドカー（障害注入プロキシ）" vertex="1">
+          <mxGeometry height="18" width="270" x="35" y="63" as="geometry" />
+        </mxCell>
+        <mxCell id="lg3" parent="legend" style="rounded=1;fillColor=#f8cecc;strokeColor=#b85450;" value="" vertex="1">
+          <mxGeometry height="18" width="18" x="10" y="88" as="geometry" />
+        </mxCell>
+        <mxCell id="lg3t" parent="legend" style="text;fontSize=11;align=left;" value="b×5 実験（SLO 違反・カスケード障害）" vertex="1">
+          <mxGeometry height="18" width="270" x="35" y="88" as="geometry" />
+        </mxCell>
+        <mxCell id="lg4" parent="legend" style="rounded=1;fillColor=#fff2cc;strokeColor=#d6b656;" value="" vertex="1">
+          <mxGeometry height="18" width="18" x="10" y="113" as="geometry" />
+        </mxCell>
+        <mxCell id="lg4t" parent="legend" style="text;fontSize=11;align=left;" value="c×5 実験（部分劣化・graceful degradation）" vertex="1">
+          <mxGeometry height="18" width="270" x="35" y="113" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

@@ -472,7 +472,7 @@ Phase B（emergency_recover スレッド）:
 ---
 
 ### 実験結果サマリー
-
+c
 | 実験 | Phase A | Phase B | Safety Net | 総合 |
 |---|---|---|---|---|
 | network_latency | ✓ p95 220ms ≤ 250ms | ✓ 217ms TTR 30s | — | **PASS** |
