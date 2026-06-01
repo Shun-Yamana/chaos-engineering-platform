@@ -1,74 +1,91 @@
 # Chaos Engineering Platform
 
-障害を意図的に注入し、システムの自己回復能力と SLO への影響を自動計測・停止するプラットフォーム。
+障害を意図的に注入し、システムの自己回復能力と SLO への影響を自動計測・評価するプラットフォーム。  
+防衛設計の発火証拠（defense evidence）と X-Ray による障害伝播の可視化を 2 軸で実証する。
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────┐
-│  Chaos Control Plane                │
-│  React SPA (CloudFront + Cognito)   │
-│  API Gateway → Lambda → DynamoDB    │
-│  実験定義 / 実行 / 停止 / 評価結果   │
-└──────────────┬──────────────────────┘
-               │ DynamoDB polling
-┌──────────────▼──────────────────────┐
-│  chaos-agent (EKS Fargate)          │
-│  env patch / Pod scale → service-b  │
-│  ・Pod kill                         │
-│  ・CPU stress (bytearray busy-loop) │
-│  ・Memory stress (150MB bytearray)  │
-│  ・HTTP error inject (FAULT_RATE)   │
-│  ・Network latency (tc netem)       │
-└──────────────┬──────────────────────┘
-               │ メトリクス
-┌──────────────▼──────────────────────┐
-│  Observability                      │
-│  ALB → CloudWatch (ALB metrics)     │
-│  service-b EMF (latency / errors)   │
-│  Lambda: sli_calculator (毎分)      │
-│  Lambda: auto_stopper (毎分)        │
-│  DynamoDB Streams → Evaluator Lambda│
-│  CloudWatch Alarms (9個) → SNS      │
-│  Evaluator → Slack 通知             │
-└─────────────────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│  Chaos Control Plane                                 │
+│  React SPA (CloudFront + Cognito)                    │
+│  API Gateway → Lambda → DynamoDB                     │
+│  実験定義 / 実行 / 停止 / 評価結果                    │
+└──────────────────────┬───────────────────────────────┘
+                       │ DynamoDB polling
+┌──────────────────────▼───────────────────────────────┐
+│  chaos-agent (EKS EC2 Managed Node Group)            │
+│  ・Pod kill           → Chaos Mesh PodChaos          │
+│  ・CPU stress         → Chaos Mesh StressChaos       │
+│  ・Memory stress      → Chaos Mesh StressChaos       │
+│  ・Network latency    → Chaos Mesh NetworkChaos      │
+│  ・HTTP error inject  → FAULT_RATE env patch (ADR 094)│
+│  ・Node failure       → AWS FIS EC2 terminate        │
+│  ・AZ isolation       → AWS FIS Network disruption   │
+└──────────────────────┬───────────────────────────────┘
+                       │ 障害注入
+┌──────────────────────▼───────────────────────────────┐
+│  対象サービス (EKS EC2 / default namespace)           │
+│                                                      │
+│  service-a ──asyncio.gather──→ service-b → service-c │
+│                           └──→ service-d             │
+│                                                      │
+│  ・Envoy sidecar: timeout 200ms / outlier detection  │
+│  ・Circuit Breaker + Stale Cache + Fallback          │
+│  ・X-Ray 分散トレーシング (a→b→c / a→d)             │
+└──────────────────────┬───────────────────────────────┘
+                       │ メトリクス
+┌──────────────────────▼───────────────────────────────┐
+│  Observability                                       │
+│  ALB → CloudWatch (ALB metrics)                      │
+│  EMF: FallbackCount / StaleCacheHitCount /           │
+│       CircuitBreakerState / FaultInjectedCount       │
+│  Lambda: sli_calculator (毎分)                       │
+│  Lambda: auto_stopper  (毎分)                        │
+│  DynamoDB Streams → Evaluator Lambda                 │
+│    Phase A / Phase B / Safety Net                    │
+│    + defense_evidence（防衛発火証拠）(ADR 095)        │
+│  CloudWatch Alarms (9個) → SNS → Slack               │
+└──────────────────────────────────────────────────────┘
 ```
-
-詳細は [アーキテクチャ図](docs/architecture-overview.drawio) を参照。
 
 ## Tech Stack
 
 | Category | Technology |
 |---|---|
-| Language | Python 3.13 |
+| Language | Python 3.13 / TypeScript |
 | Infrastructure | Terraform v1.8.5 |
-| Container Orchestration | EKS Fargate |
-| Fault Injection Targets | FastAPI × 2 (service-a + service-b) |
-| Fault Types | pod_kill / cpu_stress / memory_stress / http_error_inject / network_latency |
-| Service Mesh | Envoy sidecar (timeout + retry + circuit breaker) |
-| Observability | CloudWatch ALB metrics + EMF + Container Insights |
+| Container Orchestration | EKS EC2 Managed Node Group (t3.medium × 2) |
+| Fault Injection (K8s) | Chaos Mesh v2.7.2 (PodChaos / StressChaos / NetworkChaos) |
+| Fault Injection (Infra) | AWS FIS (EC2 terminate / Network disruption) |
+| Fault Injection (App) | FAULT_RATE env var patch (http_error_inject, ADR 094) |
+| Target Services | FastAPI × 4 (service-a / b / c / d) |
+| Service Topology | a → { b → c (chain), d (fan-out) } |
+| Service Mesh | Envoy sidecar (timeout / outlier detection / retry) |
+| Resilience Patterns | Circuit Breaker / Stale Cache / Fallback |
+| Observability | CloudWatch ALB + EMF + Container Insights + X-Ray |
+| Distributed Tracing | AWS X-Ray SDK + httpx trace propagation (ADR 084) |
 | SLO Management | DynamoDB + sli_calculator Lambda + auto_stopper Lambda |
-| Evaluation | DynamoDB Streams → Evaluator Lambda (Phase A / Phase B / Safety Net) |
+| Evaluation | Evaluator Lambda — Phase A / Phase B / Safety Net + defense_evidence (ADR 095) |
 | Alerting | CloudWatch Alarms (9個) → SNS → Slack |
 | Frontend | React SPA (Vite + TypeScript) → CloudFront + Cognito |
-| CI/CD | GitHub Actions |
-| ADR | 050本（全設計判断を記録） |
+| CI/CD | GitHub Actions (ECR push → EKS rolling update) |
+| ADR | 095本（全設計判断を記録） |
 
 ## Quick Start
 
 ### Prerequisites
 
-- AWS CLI v2 configured (`aws configure`)
+- AWS CLI v2 configured
 - Terraform v1.8.5+
 - kubectl v1.31+
+- Helm v3+
 - Docker
 
 ### 1. Bootstrap Terraform Backend
 
 ```bash
-cd terraform/bootstrap
-terraform init
-terraform apply
+cd terraform/bootstrap && terraform init && terraform apply
 ```
 
 ### 2. Deploy Infrastructure
@@ -76,48 +93,55 @@ terraform apply
 ```bash
 cd terraform
 terraform init
-terraform apply -var="slack_webhook_url=https://hooks.slack.com/..."
+terraform apply \
+  -var="slack_webhook_url=https://hooks.slack.com/..." \
+  -var="github_repo=your-org/your-repo"
 ```
 
-### 3. Build & Push Docker Images
+### 3. Install Chaos Mesh
 
 ```bash
-AWS_ACCOUNT_ID=203553641035
-AWS_REGION=ap-northeast-1
-ECR_BASE=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/chaos-platform
-
-aws ecr get-login-password | docker login --username AWS --password-stdin $ECR_BASE
-
-docker build -t $ECR_BASE/service-a:latest ./services/service-a
-docker push $ECR_BASE/service-a:latest
-
-docker build -t $ECR_BASE/service-b:latest ./services/service-b
-docker push $ECR_BASE/service-b:latest
+helm repo add chaos-mesh https://charts.chaos-mesh.org
+helm install chaos-mesh chaos-mesh/chaos-mesh \
+  --namespace chaos-mesh --create-namespace \
+  --set chaosDaemon.runtime=containerd \
+  --set "chaosDaemon.socketPath=/run/containerd/containerd.sock" \
+  --version 2.7.2 --wait
 ```
 
-### 4. Deploy to EKS
+### 4. Deploy Services (GitHub Actions)
+
+main ブランチへの push で自動実行される。
 
 ```bash
-aws eks update-kubeconfig --name chaos-platform-cluster --region ap-northeast-1
-
-IMAGE_A=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/chaos-platform/service-a:latest
-IMAGE_B=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/chaos-platform/service-b:latest
-
-sed "s|SERVICE_A_IMAGE|$IMAGE_A|g" k8s/service-a.yaml | kubectl apply -f -
-sed "s|SERVICE_B_IMAGE|$IMAGE_B|g" k8s/service-b.yaml | kubectl apply -f -
-
-kubectl get pods
+git push origin main
+# → ECR build & push (service-a/b/c/d + chaos-agent)
+# → kubectl apply (k8s manifests + chaos-agent)
 ```
 
 ### 5. Run a Chaos Experiment
 
-実験は **React フロントエンド（GUI）** から実行する。CLI は廃止済み。
+実験は **React フロントエンド（GUI）** から実行する。
 
-1. CloudFront URL にアクセス（Cognito 認証）
-2. 「新規実験」フォームでフォルトタイプ・duration・強度・SLO 閾値を設定
-3. 「実験開始」→ chaos-agent が障害を注入
-4. 実験完了後、Evaluator Lambda が Phase A / Phase B / Safety Net を自動判定
+1. `https://<CloudFront-domain>` にアクセス（Cognito 認証）
+2. 「+ New Experiment」からフォルトタイプ・duration・intensity・SLO 閾値を設定
+3. 「実験開始」→ chaos-agent が障害注入
+4. 実験完了後、Evaluator Lambda が Phase A / Phase B / Safety Net + defense_evidence を自動判定
 5. 結果が UI にリアルタイム反映・Slack に通知
+
+## Evaluation Framework（2 軸）
+
+```
+防衛設計軸: 防衛機構が設計通りに発火したことをメトリクスで証明
+  ├ StaleCacheHitCount ≥ 1  → stale cache が発動した
+  ├ FallbackCount ≥ 1       → fallback が発動した
+  ├ circuit_breaker_opened  → CB が開いた
+  └ oomkill_confirmed ≥ 1   → OOMKill が発生した（memory_stress）
+
+可視化軸: X-Ray サービスマップで障害伝播を確認
+  ├ b 攻撃時: a→b エッジが赤 / a→d エッジは青（d は無影響）
+  └ d 攻撃時: a→d エッジが赤 / b→c エッジは青（b/c は無影響）
+```
 
 ## Auto-Stop Flow
 
@@ -129,34 +153,36 @@ EventBridge (1分ごと)
   → auto_stopper Lambda
       → SLI > SLO 閾値？
           → emergency_stop=true をセット
-          → chaos-agent が emergency_recover を実行
-              ├ scale=0 → トラフィック遮断
-              ├ FAULT_RATE 環境変数を削除
-              ├ 30s 待機
-              └ scale=2 → rolling update → 回復
+          → chaos-agent が障害注入を停止（Chaos Mesh CR 削除 or FAULT_RATE=0）
 
 EventBridge → DynamoDB Streams
-  → Evaluator Lambda (status=completed をトリガー)
+  → Evaluator Lambda (status=completed/stopped をトリガー)
       → 5分バッファ後に CloudWatch 再評価
-      → Phase A / Phase B / Safety Net を判定
-      → Slack 通知
+      → Phase A / Phase B / Safety Net / defense_evidence を判定
+      → Slack 通知（PASS/FAIL + 発火証拠）
 ```
 
 ## GitHub Actions
 
 | Workflow | Trigger | Action |
 |---|---|---|
-| `terraform.yml` | PR to main | `terraform plan` → PR コメント |
-| `terraform.yml` | Push to main | `terraform apply` |
-| `deploy.yml` | Push to main (services/k8s 変更) | ECR push → kubectl apply |
+| `terraform.yml` | PR to main (`terraform/**`) | `terraform plan` → PR コメント |
+| `deploy.yml` | Push to main (`services/chaos/k8s/**`) | ECR push → EKS rolling update |
+| `deploy.yml` | Push to main (`frontend/**`) | S3 sync → CloudFront invalidation |
 
 ## GitHub Secrets
 
 | Secret | Description |
 |---|---|
-| `AWS_ACCESS_KEY_ID` | AWS アクセスキー |
-| `AWS_SECRET_ACCESS_KEY` | AWS シークレットキー |
 | `SLACK_WEBHOOK_URL` | Slack Incoming Webhook URL |
+| `COGNITO_CLIENT_ID` | Cognito アプリクライアント ID |
+| `COGNITO_DOMAIN` | Cognito ホスト UI ドメイン（https://... 形式） |
+| `API_ENDPOINT` | API Gateway エンドポイント URL |
+| `FRONTEND_BUCKET` | フロントエンド S3 バケット名 |
+| `FRONTEND_DISTRIBUTION_ID` | CloudFront ディストリビューション ID |
+| `CHAOS_AGENT_ROLE_ARN` | chaos-agent IRSA ロール ARN |
+| `ALB_LOGS_BUCKET` | ALB アクセスログ S3 バケット名 |
+| `CLOUDFRONT_ORIGIN_SECRET` | CloudFront オリジン検証シークレット |
 
 
 
@@ -184,17 +210,17 @@ EventBridge → DynamoDB Streams
 | ユーザー | CloudFront → React (Cognito 認証) |
 | API | ALB → service-a (FastAPI) |
 | 依存 | service-a → Envoy sidecar → service-b (FastAPI) |
-| フォルト対象 | service-b (EKS Fargate, `chaos` namespace) |
-| 実験制御 | chaos-agent (EKS Fargate, DynamoDB polling) |
+| フォルト対象 | service-b (EKS EC2, `default` namespace) |
+| 実験制御 | chaos-agent (EKS EC2, DynamoDB polling) |
 | 計測 | ALB アクセスログ → CloudWatch / EMF |
 | 評価 | DynamoDB Streams → Evaluator Lambda → DynamoDB |
 | 監視 | CloudWatch Alarms → SNS → auto_stopper Lambda |
 
 ### 設計のポイント
 
-- **フォルト対象を chaos namespace に分離**: service-b のみに障害を注入し、service-a への波及を Envoy でコントロール
+- **chaos-agent を専用 namespace に分離**: chaos-agent は `chaos-agent` namespace、対象サービスは `default` namespace に分けて blast radius を制御
 - **評価を自動化**: 実験完了 → DynamoDB Streams → Evaluator Lambda が Phase A / Phase B / Safety Net の 3 段階で自動判定
-- **ADR 50 本**: 全設計判断を Architecture Decision Record として記録（001〜050）
+- **ADR 095 本**: 全設計判断を Architecture Decision Record として記録（001〜095）
 
 ---
 
@@ -206,7 +232,7 @@ EventBridge → DynamoDB Streams
           ↓
 ② フォルト注入（chaos-agent）
     DynamoDB polling で実験を検出
-    → env patch / Pod scale で service-b に障害を注入
+    → Chaos Mesh / FAULT_RATE patch / AWS FIS で service-b に障害を注入
           ↓
 ③ メトリクス監視
     ALB アクセスログ → CloudWatch Logs Insights
@@ -259,14 +285,16 @@ EventBridge → DynamoDB Streams
 | 障害 | Phase A で働くレジリエンス設計 | Phase B で働くレジリエンス設計 |
 |---|---|---|
 | network_latency | Envoy timeout (200ms) + Stale cache | 遅延除去で即回復 |
-| pod_kill | Envoy retry (connect-failure) | Fargate 自動再起動 |
+| pod_kill | Envoy retry (connect-failure) | K8s 自動再起動 |
 | cpu_stress | Envoy timeout で上限を打ち切る | HPA スケールアウト（CPU 70%） |
 | memory_stress | 150MB 設計（OOMKill 回避） | rolling update でプロセス再起動 |
 | http_error_inject | auto_stopper 発動（SLI 超過検知） | emergency_recover（scale=0 → 2） |
+| node_failure | ALB ヘルスチェックで異常ノード除外 + K8s 再スケジュール | 新ノードへのロールアウト完了 |
+| az_isolation | ALB が AZ-1c へ自動フェイルオーバー | AZ 回復後にトラフィック正常化 |
 
 ---
 
-### 3-1. Envoy Circuit Breaker + Retry（ADR 006）
+### 3-1. Envoy Circuit Breaker + Retry（ADR 030 / ADR 063）
 
 **対象障害**: `network_latency`（Phase A）、`pod_kill`（Phase A）
 
@@ -282,7 +310,7 @@ service-a → [Envoy sidecar]
 
 ---
 
-### 3-2. Live-first Stale Cache Fallback（ADR 007）
+### 3-2. Live-first Stale Cache Fallback（ADR 046）
 
 **対象障害**: `network_latency`（Phase A）
 
@@ -471,8 +499,44 @@ Phase B（emergency_recover スレッド）:
 
 ---
 
+### 4-6. node_failure
+
+| 項目 | 内容 |
+|---|---|
+| 注入障害 | AWS FIS で EC2 ノードを強制終了 |
+| 本番シナリオ | EC2 ハードウェア障害 / AWS 計画メンテナンス |
+| Phase A 合格基準 | error_rate ≤ 10%（ALB ヘルスチェックが異常ノードを即除外） |
+| Phase B 合格基準 | error_rate ≤ 1% / TTR ≤ 300s |
+| 基準の根拠 | 300s = K8s ノード再スケジュール + ローリングアップデート完了の上限（ADR 080） |
+| 実測値 | Phase A error_rate **0.000** ✓ / Phase B **0.000** TTR 30s ✓ |
+| 判定 | **PASS** |
+
+![node_failure 実験詳細](docs/photo/node_failure_detail.png)
+
+![node_failure PASS](docs/photo/node_failure_pass.png)
+
+---
+
+### 4-7. az_isolation
+
+| 項目 | 内容 |
+|---|---|
+| 注入障害 | AWS FIS で AZ-1a をネットワーク遮断（VPC サブネット隔離） |
+| 本番シナリオ | AZ 全体障害 / データセンター電源断 |
+| Phase A 合格基準 | error_rate ≤ 10%（ALB が AZ-1c へ自動フェイルオーバー） |
+| Phase B 合格基準 | error_rate ≤ 1% / TTR ≤ 30s |
+| 基準の根拠 | ALB の AZ フェイルオーバーは DNS TTL 程度で完了するため TTR 30s（ADR 083） |
+| 実測値 | Phase A error_rate **0.000** ✓ / Phase B **0.000** TTR 30s ✓ |
+| 判定 | **PASS** |
+
+![az_isolation 実験詳細](docs/photo/az_isolation_detail.png)
+
+![az_isolation PASS](docs/photo/az_isolation_pass.png)
+
+---
+
 ### 実験結果サマリー
-c
+
 | 実験 | Phase A | Phase B | Safety Net | 総合 |
 |---|---|---|---|---|
 | network_latency | ✓ p95 220ms ≤ 250ms | ✓ 217ms TTR 30s | — | **PASS** |
@@ -480,3 +544,5 @@ c
 | cpu_stress | ✓ p95 527ms ≤ 1000ms | ✓ 478ms TTR 30s | — | **PASS** |
 | memory_stress | ✓ error 0.000 ≤ 0.05 | ✓ 0.000 TTR 30s | — | **PASS** |
 | http_error_inject | ✓ error 0.125 ≥ 0.05 | ✓ 0.000 TTR 30s | ✓ auto_stopper 300s | **PASS** |
+| node_failure | ✓ error 0.000 ≤ 0.1 | ✓ 0.000 TTR 30s | ✓ not fired (expected: no) | **PASS** |
+| az_isolation | ✓ error 0.000 ≤ 0.1 | ✓ 0.000 TTR 30s | ✓ not fired (expected: no) | **PASS** |

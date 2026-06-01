@@ -61,29 +61,41 @@
         <mxCell id="alb" parent="1" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.application_load_balancer;labelBackgroundColor=#ffffff;sketch=0;fontStyle=0;fontSize=10;fillColor=#8C4FFF;strokeColor=#ffffff;fontColor=#000000;" value="ALB" vertex="1">
           <mxGeometry height="70" width="70" x="350" y="518" as="geometry" />
         </mxCell>
-        <mxCell id="eks-cluster" parent="1" style="points=[[0,0],[0.25,0],[0.5,0],[0.75,0],[1,0],[1,0.25],[1,0.5],[1,0.75],[1,1],[0.75,1],[0.5,1],[0.25,1],[0,1],[0,0.75],[0,0.5],[0,0.25]];shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_eks_cluster;strokeColor=#FF6600;fillColor=#FFF3E0;verticalLabelPosition=top;verticalAlign=bottom;fontStyle=1;fontSize=11;fontColor=#FF6600;" value="EKS Fargate Cluster" vertex="1">
+        <mxCell id="eks-cluster" parent="1" style="points=[[0,0],[0.25,0],[0.5,0],[0.75,0],[1,0],[1,0.25],[1,0.5],[1,0.75],[1,1],[0.75,1],[0.5,1],[0.25,1],[0,1],[0,0.75],[0,0.5],[0,0.25]];shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_eks_cluster;strokeColor=#FF6600;fillColor=#FFF3E0;verticalLabelPosition=top;verticalAlign=bottom;fontStyle=1;fontSize=11;fontColor=#FF6600;" value="EKS EC2 Cluster (Managed Node Group)" vertex="1">
           <mxGeometry height="700" width="850" x="300" y="638" as="geometry" />
         </mxCell>
         <mxCell id="chaos-ns" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fffaef;strokeColor=#FF9900;fontStyle=1;fontSize=10;fontColor=#FF9900;verticalAlign=top;arcSize=3;dashed=1;strokeWidth=2;" value="namespace: chaos-agent" vertex="1">
           <mxGeometry height="590" width="278" x="318" y="708" as="geometry" />
         </mxCell>
-        <mxCell id="chaos-agent-pod" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;align=left;" value="&lt;b&gt;chaos-agent&lt;/b&gt; (Fargate Pod)&#xa;・DynamoDB 30s polling&#xa;・_claim() → fault inject&#xa;・kubectl env / scale&#xa;・fault types: network_latency /&#xa;  pod_kill / cpu_stress /&#xa;  memory_stress / http_error&#xa;・_emergency_recover()" vertex="1">
+        <mxCell id="chaos-agent-pod" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;align=left;" value="&lt;b&gt;chaos-agent&lt;/b&gt; (EC2 Pod)&#xa;・DynamoDB 30s polling&#xa;・_claim() → fault inject&#xa;・Chaos Mesh: pod_kill / cpu_stress /&#xa;  memory_stress / network_latency&#xa;・FAULT_RATE patch: http_error_inject&#xa;・AWS FIS: node_failure / az_isolation&#xa;・_emergency_recover()" vertex="1">
           <mxGeometry height="180" width="254" x="330" y="768" as="geometry" />
         </mxCell>
         <mxCell id="default-ns" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f0f4ff;strokeColor=#6c8ebf;fontStyle=1;fontSize=10;fontColor=#6c8ebf;verticalAlign=top;arcSize=3;dashed=1;strokeWidth=2;" value="namespace: default" vertex="1">
           <mxGeometry height="590" width="520" x="610" y="708" as="geometry" />
         </mxCell>
-        <mxCell id="svc-a" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;" value="&lt;b&gt;service-a&lt;/b&gt; (Fargate)&#xa;FastAPI: /health, /call-b" vertex="1">
+        <mxCell id="svc-a" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;" value="&lt;b&gt;service-a&lt;/b&gt; (EC2)&#xa;FastAPI: /aggregate/products/{id}&#xa;asyncio.gather(b, d)" vertex="1">
           <mxGeometry height="80" width="220" x="622" y="768" as="geometry" />
         </mxCell>
         <mxCell id="envoy-a" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e0e0ff;strokeColor=#6666cc;fontSize=9;" value="Envoy sidecar&#xa;circuit breaker / retry / timeout" vertex="1">
           <mxGeometry height="60" width="220" x="622" y="868" as="geometry" />
         </mxCell>
-        <mxCell id="svc-b" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;" value="&lt;b&gt;service-b&lt;/b&gt; (Fargate)&#xa;FastAPI: fault injection target" vertex="1">
+        <mxCell id="svc-b" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;" value="&lt;b&gt;service-b&lt;/b&gt; (EC2)&#xa;FastAPI: fault injection target&#xa;→ service-c (chain)" vertex="1">
           <mxGeometry height="80" width="220" x="892" y="768" as="geometry" />
         </mxCell>
         <mxCell id="envoy-b" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e0e0ff;strokeColor=#6666cc;fontSize=9;" value="Envoy sidecar&#xa;circuit breaker / retry / timeout" vertex="1">
           <mxGeometry height="60" width="220" x="892" y="868" as="geometry" />
+        </mxCell>
+        <mxCell id="svc-c" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;" value="&lt;b&gt;service-c&lt;/b&gt; (EC2)&#xa;レビュー / レコメンド&#xa;非クリティカル" vertex="1">
+          <mxGeometry height="70" width="200" x="892" y="990" as="geometry" />
+        </mxCell>
+        <mxCell id="svc-d" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;" value="&lt;b&gt;service-d&lt;/b&gt; (EC2)&#xa;在庫・価格（リアルタイム）&#xa;非クリティカル" vertex="1">
+          <mxGeometry height="70" width="200" x="642" y="990" as="geometry" />
+        </mxCell>
+        <mxCell id="e-b-c" edge="1" parent="1" source="svc-b" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=10;" target="svc-c" value="reviews">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-a-d" edge="1" parent="1" source="svc-a" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=10;dashed=1;" target="svc-d" value="asyncio.gather">
+          <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="data-group" parent="1" style="text;html=1;strokeColor=#AAAAAA;fillColor=#F9F9F9;fontColor=#333333;fontStyle=1;fontSize=13;verticalAlign=top;" value="Data &amp; Observability" vertex="1">
           <mxGeometry height="920" width="710" x="1218" y="458" as="geometry" />

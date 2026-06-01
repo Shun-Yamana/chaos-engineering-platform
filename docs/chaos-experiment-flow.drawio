@@ -37,13 +37,13 @@
         <mxCell id="e34" edge="1" parent="1" source="dynamo_pending" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=11;fontColor=#555555;labelBackgroundColor=#ffffff;" target="chaos_agent" value="30秒ポーリング → _claim() で update_item (running)">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="chaos_agent" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" value="&lt;b&gt;chaos-agent  (EKS Fargate)&lt;/b&gt;&lt;br&gt;kubectl set env / scale → フォルト注入&lt;br&gt;トラフィックジェネレータ起動" vertex="1">
+        <mxCell id="chaos_agent" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" value="&lt;b&gt;chaos-agent  (EKS EC2)&lt;/b&gt;&lt;br&gt;kubectl set env / scale → フォルト注入&lt;br&gt;トラフィックジェネレータ起動" vertex="1">
           <mxGeometry height="72" width="340" x="200" y="450" as="geometry" />
         </mxCell>
         <mxCell id="e45" edge="1" parent="1" source="chaos_agent" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=11;fontColor=#555555;labelBackgroundColor=#ffffff;" target="service_b" value="環境変数注入 / Pod スケール変更">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="service_b" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=12;" value="&lt;b&gt;service-b  (EKS Fargate)&lt;/b&gt;&lt;br&gt;フォルト注入中（遅延 / HTTP エラー / CPU・メモリ負荷 / Pod 再起動）" vertex="1">
+        <mxCell id="service_b" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=12;" value="&lt;b&gt;service-b  (EKS EC2)&lt;/b&gt;&lt;br&gt;フォルト注入中（遅延 / HTTP エラー / CPU・メモリ負荷 / Pod 再起動）" vertex="1">
           <mxGeometry height="60" width="340" x="200" y="582" as="geometry" />
         </mxCell>
         <mxCell id="e56" edge="1" parent="1" source="service_b" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=11;fontColor=#555555;labelBackgroundColor=#ffffff;" target="cloudwatch" value="ALB アクセスログ → EMF メトリクス送信">
